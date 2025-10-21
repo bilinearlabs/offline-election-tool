@@ -1,14 +1,10 @@
 use std::collections::HashMap;
 
-use sp_core::{crypto::{Ss58AddressFormat, Ss58Codec}, H256};
+use sp_core::H256;
 
 use crate::{
-    models::{Chain, Nominator, NominatorStake, Snapshot, StakingConfig, Validator, ValidatorNomination}, storage_client::StorageClient
+    models::{account_to_ss58_for_chain, Chain, Nominator, NominatorStake, Snapshot, StakingConfig, Validator, ValidatorNomination}, storage_client::StorageClient
 };
-
-fn account_to_ss58_for_chain(account: &sp_core::crypto::AccountId32, chain: Chain) -> String {
-    account.to_ss58check_with_version(Ss58AddressFormat::custom(chain.ss58_prefix()))
-}
 
 pub async fn build(client: &StorageClient, chain: Chain, block: Option<H256>) -> Result<Snapshot, Box<dyn std::error::Error>> {
     let complete_exposure = client.get_all_validators_complete_exposure(block).await?;

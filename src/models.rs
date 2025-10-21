@@ -1,6 +1,11 @@
 use serde::Serialize;
+use sp_core::crypto::{Ss58AddressFormat, Ss58Codec};
 
-use crate::primitives::Balance;
+use crate::primitives::{AccountId, Balance};
+
+pub fn account_to_ss58_for_chain(account: &AccountId, chain: Chain) -> String {
+    account.to_ss58check_with_version(Ss58AddressFormat::custom(chain.ss58_prefix()))
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Chain {

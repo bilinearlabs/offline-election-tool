@@ -5,7 +5,9 @@ use jsonrpsee_ws_client::{WsClient, WsClientBuilder};
 use parity_scale_codec::{Decode, Encode};
 use pallet_staking::{ActiveEraInfo, Exposure, ValidatorPrefs};
 use sp_staking::{PagedExposureMetadata, ExposurePage};
-use pallet_election_provider_multi_phase::{self, RoundSnapshot};
+use pallet_election_provider_multi_phase::{RoundSnapshot};
+use sp_npos_elections::VoteWeight;
+use frame_support::{BoundedVec, pallet_prelude::ConstU32};
 
 use serde_json::to_value;
 
@@ -22,7 +24,10 @@ pub struct StorageClient {
 
 impl StorageClient {
     pub async fn new(node_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let client = WsClientBuilder::default().build(node_url).await?;
+        let client = WsClientBuilder::default()
+            .max_response_size(20 * 1024 * 1024)     // 20MB
+            .build(node_url)
+            .await?;
         Ok(StorageClient { client })
     }
 
@@ -225,18 +230,34 @@ impl StorageClient {
     }
 
     // Only when snapshot is present
-    pub async fn get_snapshot(&self, at: Option<H256>) -> Result<Option<RoundSnapshot<AccountId, (AccountId, Balance, Vec<u32>)>>, Box<dyn std::error::Error>> {
-        let snapshot = self.read::<Option<RoundSnapshot<AccountId, (AccountId, Balance, Vec<u32>)>>>(
-            self.value_key(b"ElectionProviderMultiPhase", b"Snapshot"),
+    pub async fn get_snapshot(&self, at: Option<H256>) -> Result<Option<RoundSnapshot<AccountId, (AccountId, VoteWeight, BoundedVec<AccountId, ConstU32<16>>)>>, Box<dyn std::error::Error>> {
+        let snapshot_key = self.value_key(b"ElectionProviderMultiPhase", b"Snapshot");
+        self.read::<RoundSnapshot<AccountId, (AccountId, VoteWeight, BoundedVec<AccountId, ConstU32<16>>)>>(
+            snapshot_key,
             at
-        ).await?;
-        Ok(snapshot.flatten())
+        ).await
+    }
+
+    /// Check the current election phase
+    pub async fn get_election_phase(&self, at: Option<H256>) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        let phase_key = self.value_key(b"ElectionProviderMultiPhase", b"CurrentPhase");
+        let phase = self.read::<u8>(phase_key, at).await?;
+        
+        let phase_name = match phase {
+            Some(0) => "Off",
+            Some(1) => "Signed",
+            Some(2) => "Unsigned",
+            Some(3) => "Emergency",
+            _ => "Unknown",
+        };
+        
+        Ok(Some(phase_name.to_string()))
     }
 
     // Only when snapshot is present
     pub async fn get_desired_targets(&self, at: Option<H256>) -> Result<Option<u32>, Box<dyn std::error::Error>> {
-        let desired_targets = self.read::<Option<u32>>(self.value_key(b"ElectionProviderMultiPhase", b"DesiredTargets"), at).await?;
-        Ok(desired_targets.flatten())
+        let desired_targets = self.read::<u32>(self.value_key(b"ElectionProviderMultiPhase", b"DesiredTargets"), at).await?;
+        Ok(desired_targets)
     }
 
     pub async fn get_validator_count(&self, at: Option<H256>) -> Result<u32, Box<dyn std::error::Error>> {
