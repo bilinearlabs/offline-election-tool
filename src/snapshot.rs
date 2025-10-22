@@ -20,12 +20,7 @@ pub async fn build(client: &StorageClient, chain: Chain, block: Option<H256>) ->
         }
         let prefs = prefs.unwrap();
 
-        let stash_account = client.get_stash_for_controller(validator.clone(), block).await?;
-        if stash_account.is_none() {
-            continue;
-        }
-        let stash = stash_account.unwrap();
-        let validator_stash_ss58 = account_to_ss58_for_chain(&stash, chain);
+        let validator_stash_ss58 = account_to_ss58_for_chain(&validator.clone(), chain);
 
         let validator_struct = Validator {
             stash: validator_stash_ss58.clone(),

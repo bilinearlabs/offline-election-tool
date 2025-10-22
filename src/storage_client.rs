@@ -3,10 +3,10 @@ use jsonrpsee_core::ClientError;
 use jsonrpsee_ws_client::{WsClient, WsClientBuilder};
 
 use parity_scale_codec::{Decode, Encode};
-use pallet_staking::{ActiveEraInfo, Exposure, ValidatorPrefs};
+use pallet_staking::{ActiveEraInfo, Exposure, StakingLedger, ValidatorPrefs};
 use sp_staking::{PagedExposureMetadata, ExposurePage};
 use pallet_election_provider_multi_phase::{RoundSnapshot};
-use sp_npos_elections::VoteWeight;
+use sp_npos_elections::{VoteWeight};
 use frame_support::{BoundedVec, pallet_prelude::ConstU32};
 
 use serde_json::to_value;
@@ -187,14 +187,18 @@ impl StorageClient {
         }))
     }
 
+    pub async fn get_active_era(&self, at: Option<H256>) -> Result<Option<ActiveEraInfo>, Box<dyn std::error::Error>> {
+        let active_era_key = self.value_key(b"Staking", b"ActiveEra");
+        self.read::<ActiveEraInfo>(active_era_key, at).await
+    }
+
     // Get complete exposure data for all validators in an era
     pub async fn get_all_validators_complete_exposure(&self, at: Option<H256>) -> Result<(EraIndex, Vec<(AccountId, Exposure<AccountId, Balance>)>), Box<dyn std::error::Error>> {
         let validators_key = self.value_key(b"Session", b"Validators");
         let validators = self.read::<Vec<AccountId>>(validators_key, at).await?
             .ok_or("Validators not found")?;
 
-        let active_era_key = self.value_key(b"Staking", b"ActiveEra");
-        let active_era = self.read::<ActiveEraInfo>(active_era_key, at).await?
+        let active_era = self.get_active_era(at).await?
             .ok_or("Active era not found")?;
         let era = active_era.index;
 
@@ -220,14 +224,23 @@ impl StorageClient {
     }
 
     /// Get stash account for a given controller account
-    pub async fn get_stash_for_controller(&self, controller: AccountId, at: Option<H256>) -> Result<Option<AccountId>, Box<dyn std::error::Error>> {
+    pub async fn get_controller_from_stash(&self, stash: AccountId, at: Option<H256>) -> Result<Option<AccountId>, Box<dyn std::error::Error>> {
         let bonded_key = self.map_key(
             b"Staking",
             b"Bonded",
-            &controller.encode(),
+            &stash.encode(),
         );
         self.read::<AccountId>(bonded_key, at).await
     }
+
+    // pub async fn ledger(&self, controller: AccountId, at: Option<H256>) -> Result<Option<StakingLedger<>>, Box<dyn std::error::Error>> {
+    //     let ledger_key = self.map_key(
+    //         b"Staking",
+    //         b"Ledger",
+    //         &controller.encode(),
+    //     );
+    //     self.read::<StakingLedger<>>(ledger_key, at).await
+    // }
 
     // Only when snapshot is present
     pub async fn get_snapshot(&self, at: Option<H256>) -> Result<Option<RoundSnapshot<AccountId, (AccountId, VoteWeight, BoundedVec<AccountId, ConstU32<16>>)>>, Box<dyn std::error::Error>> {
