@@ -1,0 +1,31 @@
+# Main CI Rust workflow
+name: Rust Main
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Run for every event affecting the main branch
+on:
+    push:
+        branches:
+        - main
+        paths:
+        - 'src/**'
+        - 'Cargo.**'
+    pull_request:
+        branches:
+        - main
+        paths:
+        - 'src/**'
+        - 'Cargo.**'
+    workflow_dispatch:
+
+jobs:
+    test:
+        name: Test
+        runs-on: ubuntu-latest
+        steps:
+        - uses: actions/checkout@v4
+        - uses: Swatinem/rust-cache@v2
+        - name: Tests with all features
+          run: cargo test --all-features

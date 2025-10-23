@@ -1,9 +1,10 @@
 use jsonrpsee_core::client::ClientT;
+use jsonrpsee_core::traits::ToRpcParams;
 use jsonrpsee_core::ClientError;
 use jsonrpsee_ws_client::{WsClient, WsClientBuilder};
 
 use parity_scale_codec::{Decode, Encode};
-use pallet_staking::{ActiveEraInfo, Exposure, StakingLedger, ValidatorPrefs};
+use pallet_staking::{ActiveEraInfo, Exposure, ValidatorPrefs};
 use sp_staking::{PagedExposureMetadata, ExposurePage};
 use pallet_election_provider_multi_phase::{RoundSnapshot};
 use sp_npos_elections::{VoteWeight};
@@ -18,11 +19,32 @@ use frame_support::{Twox64Concat, StorageHasher};
 
 use crate::primitives::{AccountId, Balance, EraIndex};
 
-pub struct StorageClient {
-    client: WsClient,
+/// Trait for jsonrpsee client operations to enable dependency injection for testing
+#[async_trait::async_trait]
+pub trait RpcClient: Send + Sync {
+    async fn rpc_request<T, P>(&self, method: &str, params: P) -> Result<T, ClientError>
+    where
+        T: serde::de::DeserializeOwned + 'static,
+        P: ToRpcParams + Send + 'static;
 }
 
-impl StorageClient {
+/// Implementation of RpcClient for WsClient
+#[async_trait::async_trait]
+impl RpcClient for WsClient {
+    async fn rpc_request<T, P>(&self, method: &str, params: P) -> Result<T, ClientError>
+    where
+        T: serde::de::DeserializeOwned + 'static,
+        P: ToRpcParams + Send + 'static
+    {
+        self.request(method, params).await
+    }
+}
+
+pub struct StorageClient<C: RpcClient> {
+    client: C,
+}
+
+impl StorageClient<WsClient> {
     pub async fn new(node_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = WsClientBuilder::default()
             .max_response_size(20 * 1024 * 1024)     // 20MB
@@ -30,10 +52,10 @@ impl StorageClient {
             .await?;
         Ok(StorageClient { client })
     }
+}
 
-    fn value_key(&self, module: &[u8], storage: &[u8]) -> StorageKey {
-        StorageKey(self.module_prefix(module, storage))
-    }
+#[allow(dead_code)]
+impl<C: RpcClient> StorageClient<C> {
     fn module_prefix(&self, module: &[u8], storage: &[u8]) -> Vec<u8> {
         let module_hash = twox_128(module);
         let storage_hash = twox_128(storage);
@@ -41,6 +63,10 @@ impl StorageClient {
         final_key.extend_from_slice(&module_hash);
         final_key.extend_from_slice(&storage_hash);
         final_key
+    }
+
+    fn value_key(&self, module: &[u8], storage: &[u8]) -> StorageKey {
+        StorageKey(self.module_prefix(module, storage))
     }
 
     fn map_key(&self, module: &[u8], storage: &[u8], key: &[u8]) -> StorageKey {
@@ -80,7 +106,7 @@ impl StorageClient {
         let serialized_key = to_value(key).expect("StorageKey serialization infallible");
         let at_val = to_value(at).expect("Block hash serialization infallible");
         let raw: Result<Option<StorageData>, ClientError> = self.client
-            .request("state_getStorage", (serialized_key, at_val))
+            .rpc_request("state_getStorage", (serialized_key, at_val))
             .await;
 
         if raw.is_err() {
@@ -89,7 +115,8 @@ impl StorageClient {
             return Ok(None);
         }
 
-        match raw.unwrap() {
+        match 
+        raw.unwrap() {
             None => Ok(None),
             Some(data) => {
                 let encoded = data.0;
@@ -98,38 +125,10 @@ impl StorageClient {
         }
     }
 
-    pub async fn get_total_issuance_at(&self, at: Option<H256>) -> Result<u128, Box<dyn std::error::Error>> {
-        let key = self.value_key(b"Balances", b"TotalIssuance");
-        let result = self.read::<Balance>(key, at).await?;
-        Ok(result.unwrap_or(0))
-    }
-
-    // pub async fn get_validators_and_expo_at(&self, at: H256) -> Result<(EraIndex, Vec<(AccountId, PagedExposureMetadata<Balance>)>), Box<dyn std::error::Error>> {
-    //     let validators_key = self.value_key(b"Session", b"Validators");
-    //     let validators = self.read::<Vec<AccountId>>(validators_key, at).await?
-    //         .ok_or("Validators not found")?;
-
-    //     let active_era_key = self.value_key(b"Staking", b"ActiveEra");
-    //     let active_era = self.read::<ActiveEraInfo>(active_era_key, at).await?
-    //         .ok_or("Active era not found")?;
-    //     let era = active_era.index;
-
-    //     let mut validators_and_expo = vec![];
-
-    //     for validator in validators {
-    //         let exposure_key = self.double_map_key(
-    //             b"Staking",
-    //             b"ErasStakersOverview", 
-    //             &era.encode(),
-    //             &validator.encode(),
-    //         );
-    //         let exposure_metadata = self.read::<PagedExposureMetadata<Balance>>(exposure_key, at).await?
-    //             .ok_or("Staker exposure not found")?;
-
-    //         validators_and_expo.push((validator, exposure_metadata));
-    //     }
-
-    //     Ok((era, validators_and_expo))
+    // pub async fn get_total_issuance_at(&self, at: Option<H256>) -> Result<u128, Box<dyn std::error::Error>> {
+    //     let key = self.value_key(b"Balances", b"TotalIssuance");
+    //     let result = self.read::<Balance>(key, at).await?;
+    //     Ok(result.unwrap_or(0))
     // }
 
     // Get the overview metadata for a validator at a specific era (contains page_count)
@@ -223,15 +222,15 @@ impl StorageClient {
         self.read::<ValidatorPrefs>(validators_key, at).await
     }
 
-    /// Get stash account for a given controller account
-    pub async fn get_controller_from_stash(&self, stash: AccountId, at: Option<H256>) -> Result<Option<AccountId>, Box<dyn std::error::Error>> {
-        let bonded_key = self.map_key(
-            b"Staking",
-            b"Bonded",
-            &stash.encode(),
-        );
-        self.read::<AccountId>(bonded_key, at).await
-    }
+    // Get stash account for a given controller account
+    // pub async fn get_controller_from_stash(&self, stash: AccountId, at: Option<H256>) -> Result<Option<AccountId>, Box<dyn std::error::Error>> {
+    //     let bonded_key = self.map_key(
+    //         b"Staking",
+    //         b"Bonded",
+    //         &stash.encode(),
+    //     );
+    //     self.read::<AccountId>(bonded_key, at).await
+    // }
 
     // pub async fn ledger(&self, controller: AccountId, at: Option<H256>) -> Result<Option<StakingLedger<>>, Box<dyn std::error::Error>> {
     //     let ledger_key = self.map_key(
@@ -278,7 +277,7 @@ impl StorageClient {
         Ok(validator_count.unwrap_or(0))
     }
 
-    pub async fn get_max_nominations(&self, at: Option<H256>) -> Result<u32, Box<dyn std::error::Error>> {
+    pub async fn get_max_nominations(&self, _at: Option<H256>) -> Result<u32, Box<dyn std::error::Error>> {
         // TODO not found in storage
         return Ok(16);
     }
@@ -291,5 +290,167 @@ impl StorageClient {
     pub async fn get_min_validator_bond(&self, at: Option<H256>) -> Result<Option<u128>, Box<dyn std::error::Error>> {
         let min_validator_bond = self.read::<u128>(self.value_key(b"Staking", b"MinValidatorBond"), at).await?;
         Ok(min_validator_bond)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockall::mock;
+    use mockall::predicate::*;
+    use sp_core::storage::StorageData;
+    use sp_runtime::Perbill;
+
+    // Mock the RpcClient trait
+    mock! {
+        RpcClient {}
+
+        #[async_trait::async_trait]
+        impl RpcClient for RpcClient {
+            async fn rpc_request<T, P>(&self, method: &str, params: P) -> Result<T, ClientError>
+            where
+                T: serde::de::DeserializeOwned + 'static,
+                P: ToRpcParams + Send + 'static;
+        }
+    }
+
+    fn create_test_account_id() -> AccountId {
+        AccountId::from([1u8; 32])
+    }
+
+    #[tokio::test]
+    async fn test_module_prefix() {
+        let mock_client = MockRpcClient::new();
+        let client = StorageClient { client: mock_client };
+        let result = client.module_prefix(b"TestModule", b"TestStorage");
+        let prefix = "69667818617339ad409c359884450f004348b9f44e633139d8a8187f4eead460";
+        let prefix_bytes = hex::decode(prefix);
+        assert_eq!(prefix_bytes.unwrap(), result);
+    }
+
+    #[tokio::test]
+    async fn test_value_key() {
+        let mock_client = MockRpcClient::new();
+        let client = StorageClient { client: mock_client };
+        let result = client.value_key(b"TestModule", b"TestStorage");
+            
+        let value_key = "69667818617339ad409c359884450f004348b9f44e633139d8a8187f4eead460";
+        let value_key_storage = StorageKey(hex::decode(value_key).unwrap());
+        assert_eq!(result, value_key_storage);
+    }
+
+    #[tokio::test]
+    async fn test_map_key() {
+        let mock_client = MockRpcClient::new();
+        let client = StorageClient { client: mock_client };
+        let account_id = create_test_account_id();
+        let key = client.map_key(b"TestModule", b"TestStorage", &account_id.encode());
+        
+        let prefix = hex::decode("69667818617339ad409c359884450f004348b9f44e633139d8a8187f4eead460").unwrap();
+        let key_hash = hex::decode("0d052d00259f2a8f0101010101010101010101010101010101010101010101010101010101010101").unwrap();
+
+        let mut final_key = Vec::with_capacity(prefix.len() + key_hash.len());
+        final_key.extend_from_slice(&prefix);
+        final_key.extend_from_slice(&key_hash);
+        let final_key_storage = StorageKey(final_key);
+        assert_eq!(key, final_key_storage);
+    }
+
+    #[tokio::test]
+    async fn test_double_map_key() {
+        let mock_client = MockRpcClient::new();
+        let client = StorageClient { client: mock_client };
+        let account_id = create_test_account_id();
+        let key = client.double_map_key(b"TestModule", b"TestStorage", &account_id.encode(), &account_id.encode());
+        
+        let prefix = hex::decode("69667818617339ad409c359884450f004348b9f44e633139d8a8187f4eead460").unwrap();
+        let key_hash = hex::decode("0d052d00259f2a8f0101010101010101010101010101010101010101010101010101010101010101").unwrap();
+        let mut final_key = Vec::with_capacity(prefix.len() + key_hash.len()*2);
+        final_key.extend_from_slice(&prefix);
+        final_key.extend_from_slice(&key_hash);
+        final_key.extend_from_slice(&key_hash);
+        let final_key_storage = StorageKey(final_key);
+        assert_eq!(key, final_key_storage);
+    }
+
+    #[tokio::test]
+    async fn test_triple_map_key() {
+        let mock_client = MockRpcClient::new();
+        let client = StorageClient { client: mock_client };
+        let account_id = create_test_account_id();
+        let key = client.triple_map_key(b"TestModule", b"TestStorage", &account_id.encode(), &account_id.encode(), &account_id.encode());
+        
+        let prefix = hex::decode("69667818617339ad409c359884450f004348b9f44e633139d8a8187f4eead460").unwrap();
+        let key_hash = hex::decode("0d052d00259f2a8f0101010101010101010101010101010101010101010101010101010101010101").unwrap();
+        let mut final_key = Vec::with_capacity(prefix.len() + key_hash.len()*3);
+        final_key.extend_from_slice(&prefix);
+        final_key.extend_from_slice(&key_hash);
+        final_key.extend_from_slice(&key_hash);
+        final_key.extend_from_slice(&key_hash);
+        let final_key_storage = StorageKey(final_key);
+        assert_eq!(key, final_key_storage);
+    }
+
+    #[tokio::test]
+    async fn test_read_success() {
+        let mut mock_client = MockRpcClient::new();
+        
+        // Create properly SCALE-encoded data
+        let test_data = vec![1u8, 2u8, 3u8];
+        let test_data_for_mock = test_data.clone();
+        
+        let key = StorageKey(vec![1u8; 32]);
+        let params = (to_value(key.clone()).unwrap(), to_value(None::<H256>).unwrap());
+        mock_client
+            .expect_rpc_request()
+            .with(eq("state_getStorage"), eq(params))
+            .times(1)
+            .returning(move |_, _| Ok(Some(StorageData(test_data_for_mock.encode()))));
+
+        let client = StorageClient { client: mock_client };
+        
+        let result = client.read::<Vec<u8>>(key, None).await;
+
+        println!("Result: {:?}", result);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(test_data));
+    }
+
+    #[tokio::test]
+    async fn test_get_validator_prefs() {
+        let mut mock_client = MockRpcClient::new();
+        let account_id = create_test_account_id();
+        
+        mock_client
+            .expect_rpc_request()
+            .with(eq("state_getStorage"), mockall::predicate::always())
+            .times(1)
+            .returning(move |_: &str, _: (serde_json::Value, serde_json::Value)| Ok(Some(StorageData(ValidatorPrefs { commission: Perbill::from_percent(10), blocked: false }.encode()))));
+        
+        let client = StorageClient { client: mock_client };
+        let result = client.get_validator_prefs(account_id, None).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(ValidatorPrefs { commission: Perbill::from_percent(10), blocked: false }));
+    }
+
+    #[tokio::test]
+    async fn test_get_snapshot() {
+        let mut mock_client = MockRpcClient::new();
+        let snapshot_repsonse = RoundSnapshot::<AccountId, (AccountId, VoteWeight, BoundedVec<AccountId, ConstU32<16>>)> {
+            voters: vec![],
+            targets: vec![],
+        };
+        let snapshot_repsonse_for_mock = snapshot_repsonse.clone();
+        mock_client
+            .expect_rpc_request()
+            .with(eq("state_getStorage"), mockall::predicate::always())
+            .times(1)
+            .returning(move |_: &str, _: (serde_json::Value, serde_json::Value)| Ok(Some(StorageData(snapshot_repsonse_for_mock.encode()))));
+        let client = StorageClient { client: mock_client };
+        let result = client.get_snapshot(None).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(snapshot_repsonse));
     }
 }
