@@ -33,7 +33,7 @@ pub struct ValidatorNomination {
 #[derive(Debug, Serialize)]
 pub struct Validator {
     pub stash: String,
-    pub self_stake: Balance,
+    // pub self_stake: Balance,
     pub total_stake: Balance,
     pub commission: f64,
     pub blocked: bool,

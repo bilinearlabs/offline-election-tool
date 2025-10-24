@@ -23,6 +23,7 @@ clap = { version = "4.5.50", features = ["derive"] }
 async-trait = "0.1.89"
 mockall = "0.13.1"
 log = "0.4.28"
+subxt = "0.44.0"
 
 [profile.dev]
 incremental = true

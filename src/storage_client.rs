@@ -16,8 +16,25 @@ use sp_core::{H256};
 use sp_core::storage::{StorageData, StorageKey};
 use sp_core::hashing::{twox_128};
 use frame_support::{Twox64Concat, StorageHasher};
+use subxt::utils::AccountId32;
 
 use crate::primitives::{AccountId, Balance, EraIndex};
+
+
+#[derive(Debug, Clone, Decode)]
+struct StakingLedger {
+    pub stash: AccountId32,
+    pub total: Balance,
+    pub active: Balance,
+    pub unlocking: BoundedVec<UnlockChunk<Balance>, ConstU32<32>>,
+    pub legacy_claimed_rewards: BoundedVec<u32, ConstU32<64>>,
+}
+
+#[derive(Debug, Clone, Decode)]
+struct UnlockChunk<Balance> {
+    pub value: Balance,
+    pub era: EraIndex,
+}
 
 /// Trait for jsonrpsee client operations to enable dependency injection for testing
 #[async_trait::async_trait]
@@ -155,12 +172,9 @@ impl<C: RpcClient> StorageClient<C> {
     }
 
     // Get complete exposure data for a validator by reading all pages
-    pub async fn get_complete_validator_exposure(&self, era: EraIndex, validator: AccountId, at: Option<H256>) -> Result<Option<Exposure<AccountId, Balance>>, Box<dyn std::error::Error>> {
-        // Clone validator to avoid ownership issues
-        let validator_clone = validator.clone();
-        
+    pub async fn get_complete_validator_exposure(&self, era: EraIndex, validator: AccountId, at: Option<H256>) -> Result<Option<Exposure<AccountId, Balance>>, Box<dyn std::error::Error>> { 
         // First get the overview to know how many pages exist
-        let overview = match self.get_validator_overview(era, validator_clone.clone(), at).await? {
+        let overview = match self.get_validator_overview(era, validator.clone(), at).await? {
             Some(overview) => overview,
             None => return Ok(None),
         };
@@ -174,8 +188,8 @@ impl<C: RpcClient> StorageClient<C> {
         let mut all_nominators = Vec::new();
 
         for page in 0..page_count {
-            if let Some(exposure_page) = self.get_validator_exposure_page(era, validator_clone.clone(), page, at).await? {
-                all_nominators.extend(exposure_page.others);
+            if let Some(exposure_page) = self.get_validator_exposure_page(era, validator.clone(), page, at).await? {
+                all_nominators.extend(exposure_page.others.into_iter());
             }
         }
 
@@ -222,24 +236,34 @@ impl<C: RpcClient> StorageClient<C> {
         self.read::<ValidatorPrefs>(validators_key, at).await
     }
 
-    // Get stash account for a given controller account
-    // pub async fn get_controller_from_stash(&self, stash: AccountId, at: Option<H256>) -> Result<Option<AccountId>, Box<dyn std::error::Error>> {
-    //     let bonded_key = self.map_key(
-    //         b"Staking",
-    //         b"Bonded",
-    //         &stash.encode(),
+    // get balances
+    // pub async fn get_balance(&self, account: AccountId, at: Option<H256>) -> Result<Option<AccountData>, Box<dyn std::error::Error>> {
+    //     let balance_key = self.map_key(
+    //         b"Balances",
+    //         b"Account",
+    //         &account.encode(),
     //     );
-    //     self.read::<AccountId>(bonded_key, at).await
+    //     self.read::<AccountData>(balance_key, at).await
     // }
 
-    // pub async fn ledger(&self, controller: AccountId, at: Option<H256>) -> Result<Option<StakingLedger<>>, Box<dyn std::error::Error>> {
-    //     let ledger_key = self.map_key(
-    //         b"Staking",
-    //         b"Ledger",
-    //         &controller.encode(),
-    //     );
-    //     self.read::<StakingLedger<>>(ledger_key, at).await
-    // }
+    // Get controller account for a given stash account
+    pub async fn get_controller_from_stash(&self, stash: AccountId, at: Option<H256>) -> Result<Option<AccountId>, Box<dyn std::error::Error>> {
+        let bonded_key = self.map_key(
+            b"Staking",
+            b"Bonded",
+            &stash.encode(),
+        );
+        self.read::<AccountId>(bonded_key, at).await
+    }
+
+    pub async fn ledger(&self, controller: AccountId, at: Option<H256>) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>> {
+        let ledger_key = self.map_key(
+            b"Staking",
+            b"Ledger",
+            &controller.encode(),
+        );
+        self.read::<StakingLedger>(ledger_key, at).await
+    }
 
     // Only when snapshot is present
     pub async fn get_snapshot(&self, at: Option<H256>) -> Result<Option<RoundSnapshot<AccountId, (AccountId, VoteWeight, BoundedVec<AccountId, ConstU32<16>>)>>, Box<dyn std::error::Error>> {

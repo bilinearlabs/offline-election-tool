@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 
 use pallet_election_provider_multi_phase::RoundSnapshot;
 use serde::Serialize;
-use sp_core::{ConstU32, H256};
+use sp_core::{H256};
 use sp_npos_elections::{assignment_ratio_to_staked_normalized, seq_phragmen, to_support_map, VoteWeight, ElectionResult};
-use sp_runtime::{BoundedVec, PerU16};
+use frame_support::{BoundedVec, pallet_prelude::ConstU32};
+use sp_runtime::{Perbill};
 
 use crate::{
     models::{self, account_to_ss58_for_chain, Validator, ValidatorNomination}, primitives::AccountId, storage_client::{RpcClient, StorageClient}
@@ -31,8 +32,8 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
         return Err("No snapshot found".into());
     }
     let snapshot: RoundSnapshot<AccountId, (AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = snapshot.unwrap();
-    let voters: Vec<(sp_runtime::AccountId32, u64, BoundedVec<sp_runtime::AccountId32, ConstU32<16>>)> = snapshot.voters.clone();
-    println!("Voters: {:?}", snapshot.voters.len());
+    let voters: Vec<(AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = snapshot.voters.clone();
+    // println!("Voters: {:?}", snapshot.voters.len());
 
     // Filter voters
     let min_nominator_bond = client.get_min_nominator_bond(at).await?;
@@ -40,20 +41,20 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
         return Err("Min nominator bond not found".into());
     }
     let min_nominator_bond = min_nominator_bond.unwrap();
-    println!("Min nominator bond: {:?}", min_nominator_bond);
-    let filtered_voters: Vec<(sp_runtime::AccountId32, u64, BoundedVec<sp_runtime::AccountId32, ConstU32<16>>)> = voters.iter().filter(|voter| voter.1 as u128 >= min_nominator_bond).cloned().collect();
+    // println!("Min nominator bond: {:?}", min_nominator_bond);
+    let filtered_voters: Vec<(AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = voters.iter().filter(|voter| voter.1 as u128 >= min_nominator_bond).cloned().collect();
 
     let max_nominations = client.get_max_nominations(at).await?;
     let max_nominations = max_nominations;
-    println!("Max nominations: {:?}", max_nominations);
-    let filtered_voters: Vec<(sp_runtime::AccountId32, u64, BoundedVec<sp_runtime::AccountId32, ConstU32<16>>)> = filtered_voters.into_iter().map(|(who, stake, mut targets)| {
+    // println!("Max nominations: {:?}", max_nominations);
+    let filtered_voters: Vec<(AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = filtered_voters.into_iter().map(|(who, stake, mut targets)| {
         targets.truncate(max_nominations as usize);
         (who, stake, targets)
     }).collect();
 
-    println!("Filtered voters: {:?}", filtered_voters.len());
+    // println!("Filtered voters: {:?}", filtered_voters.len());
 
-    let election_result = seq_phragmen(
+    let election_result = seq_phragmen::<AccountId, Perbill>(
         desired_targets as usize,
         snapshot.targets,
         filtered_voters.clone(),
@@ -62,10 +63,7 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
     if election_result.is_err() {
         return Err("Election error".into());
     }
-    let election_result: ElectionResult<AccountId, PerU16> = election_result.unwrap();
-
-    let assignments = election_result.assignments.clone();
-    let winners = election_result.winners.clone();
+    let ElectionResult { winners, assignments } = election_result.unwrap();
 
     // Store voter weight in a map to use it in the assignment_ratio_to_staked function
     let mut voter_weight: BTreeMap<AccountId, VoteWeight> = BTreeMap::new();
@@ -81,8 +79,18 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
         return Err("Error in assignment_ratio_to_staked_normalized".into());
     }
     let staked_assignments = staked_assignments.unwrap();
-    
+
     let supports = to_support_map::<AccountId>( staked_assignments.as_slice());
+
+    // for support in supports.iter() {
+    //     println!("Support: {:?}", account_to_ss58_for_chain(support.0.clone(), models::Chain::Polkadot));
+    //     println!("Total: {:?}", support.1.total);
+    //     for voter in support.1.voters.iter() {
+    //         println!("Voter: {:?}", account_to_ss58_for_chain(voter.0.clone(), models::Chain::Polkadot));
+    //         println!("Weight: {:?}", voter.1);
+    //     }
+    //     println!("--------------------------------");
+    // }
 
     let mut active_validators = Vec::new();
     for winner in winners {
@@ -91,19 +99,6 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
             return Err("Validator prefs not found".into());
         }
 
-        let active_era = client.get_active_era(at).await?;
-        if active_era.is_none() {
-            return Err("Active era not found".into());
-        }
-        let active_era = active_era.unwrap();
-        // TODO Check if can be retrieved from other source as if validator is waiting returns None
-        let validator_exposure = client.get_complete_validator_exposure(active_era.index, winner.0.clone(), at).await?;
-        if validator_exposure.is_none() {
-            println!("Validator own not found for validator: {:?}", winner.0);
-            return Err("Validator own not found".into());
-        }
-        let validator_exposure = validator_exposure.unwrap();
-        let validator_self_stake = validator_exposure.own;
         let validator_prefs = validator_prefs.unwrap();
         let support = supports.get(&winner.0).unwrap();
         let nominations = support.voters.iter().map(|voter| {
@@ -112,10 +107,23 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
                 stake: voter.1,
             }
         }).collect();
+
+        // TODO check total stake from ledger
+        // let controller = client.get_controller_from_stash(winner.0.clone(), at).await?;
+        // if controller.is_none() {
+        //     return Err("Controller not found".into());
+        // }
+        // let controller = controller.unwrap();
+        // let ledger = client.ledger(controller.clone(), at).await?;
+        // if ledger.is_none() {
+        //     println!("Controller: {:?}", account_to_ss58_for_chain(controller.clone(), models::Chain::Polkadot));
+        //     return Err("Ledger not found".into());
+        // }
+        // let ledger = ledger.unwrap();
+        // println!("Ledger: {:?}", ledger);
         
         active_validators.push(Validator {
             stash: account_to_ss58_for_chain(winner.0, models::Chain::Polkadot),
-            self_stake: validator_self_stake,
             total_stake: support.total,
             commission: validator_prefs.commission.deconstruct() as f64 / 1_000_000_000.0,
             blocked: validator_prefs.blocked,
