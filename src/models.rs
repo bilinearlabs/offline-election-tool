@@ -3,23 +3,19 @@ use sp_core::crypto::{Ss58AddressFormat, Ss58Codec};
 
 use crate::primitives::{AccountId, Balance};
 
-pub fn account_to_ss58_for_chain(account: AccountId, chain: Chain) -> String {
-    account.to_ss58check_with_version(Ss58AddressFormat::custom(chain.ss58_prefix()))
-}
-
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum Chain {
     Polkadot,  // SS58 version 0
-    // Kusama,    // SS58 version 2
-    // Substrate, // SS58 version 42
+    Kusama,    // SS58 version 2
+    Substrate, // SS58 version 42
 }
 
 impl Chain {
-    pub fn ss58_prefix(&self) -> u16 {
+    pub fn ss58_address_format(&self) -> Ss58AddressFormat {
         match self {
-            Chain::Polkadot => 0,
-            // Chain::Kusama => 2,
-            // Chain::Substrate => 42,
+            Chain::Polkadot => Ss58AddressFormat::custom(0),
+            Chain::Kusama => Ss58AddressFormat::custom(2),
+            Chain::Substrate => Ss58AddressFormat::custom(42),
         }
     }
 }

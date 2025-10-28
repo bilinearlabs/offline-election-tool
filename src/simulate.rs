@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 
 use pallet_election_provider_multi_phase::RoundSnapshot;
 use serde::Serialize;
-use sp_core::{H256};
-use sp_npos_elections::{assignment_ratio_to_staked_normalized, seq_phragmen, to_support_map, VoteWeight, ElectionResult};
+use sp_core::{crypto::Ss58Codec, H256};
+use sp_npos_elections::{BalancingConfig, ElectionResult, VoteWeight, assignment_ratio_to_staked_normalized, reduce, seq_phragmen, to_support_map};
 use frame_support::{BoundedVec, pallet_prelude::ConstU32};
 use sp_runtime::{Perbill};
 
 use crate::{
-    models::{self, account_to_ss58_for_chain, Validator, ValidatorNomination}, primitives::AccountId, storage_client::{RpcClient, StorageClient}
+    SimulateArgs, models::{Validator, ValidatorNomination}, primitives::AccountId, storage_client::{RpcClient, StorageClient}
 };
 
 #[derive(Debug, Serialize)]
@@ -19,12 +19,14 @@ pub struct SimulationResult {
 pub async fn simulate_seq_phragmen<C: RpcClient>(
     client: &StorageClient<C>,
     at: Option<H256>,
+    args: SimulateArgs,
 ) -> Result<SimulationResult, Box<dyn std::error::Error>> {
-    let desired_targets = client.get_desired_targets(at).await?;
-    if desired_targets.is_none() {
-        return Err("No desired targets found".into());
-    }
-    let desired_targets = desired_targets.unwrap();
+    let desired_targets = if let Some(count) = args.count {
+        count
+    } else {
+        let desired_targets = client.get_desired_targets(at).await?;
+        desired_targets.unwrap_or(50) as usize
+    };
 
     let snapshot = client.get_snapshot(at).await?;
 
@@ -33,7 +35,7 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
     }
     let snapshot: RoundSnapshot<AccountId, (AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = snapshot.unwrap();
     let voters: Vec<(AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = snapshot.voters.clone();
-    // println!("Voters: {:?}", snapshot.voters.len());
+    let targets: Vec<AccountId> = snapshot.targets.clone();
 
     // Filter voters
     let min_nominator_bond = client.get_min_nominator_bond(at).await?;
@@ -41,24 +43,20 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
         return Err("Min nominator bond not found".into());
     }
     let min_nominator_bond = min_nominator_bond.unwrap();
-    // println!("Min nominator bond: {:?}", min_nominator_bond);
     let filtered_voters: Vec<(AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = voters.iter().filter(|voter| voter.1 as u128 >= min_nominator_bond).cloned().collect();
 
     let max_nominations = client.get_max_nominations(at).await?;
     let max_nominations = max_nominations;
-    // println!("Max nominations: {:?}", max_nominations);
     let filtered_voters: Vec<(AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = filtered_voters.into_iter().map(|(who, stake, mut targets)| {
         targets.truncate(max_nominations as usize);
         (who, stake, targets)
     }).collect();
 
-    // println!("Filtered voters: {:?}", filtered_voters.len());
-
     let election_result = seq_phragmen::<AccountId, Perbill>(
         desired_targets as usize,
-        snapshot.targets,
+        targets,
         filtered_voters.clone(),
-        None,
+        Some(BalancingConfig { iterations: args.iterations, tolerance: 0 }),
     );
     if election_result.is_err() {
         return Err("Election error".into());
@@ -78,19 +76,13 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
     if staked_assignments.is_err() {
         return Err("Error in assignment_ratio_to_staked_normalized".into());
     }
-    let staked_assignments = staked_assignments.unwrap();
+    let mut staked_assignments = staked_assignments.unwrap();
+    
+    if args.reduce {
+        let reduced_assignments = reduce(staked_assignments.as_mut());
+    }
 
     let supports = to_support_map::<AccountId>( staked_assignments.as_slice());
-
-    // for support in supports.iter() {
-    //     println!("Support: {:?}", account_to_ss58_for_chain(support.0.clone(), models::Chain::Polkadot));
-    //     println!("Total: {:?}", support.1.total);
-    //     for voter in support.1.voters.iter() {
-    //         println!("Voter: {:?}", account_to_ss58_for_chain(voter.0.clone(), models::Chain::Polkadot));
-    //         println!("Weight: {:?}", voter.1);
-    //     }
-    //     println!("--------------------------------");
-    // }
 
     let mut active_validators = Vec::new();
     for winner in winners {
@@ -103,7 +95,7 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
         let support = supports.get(&winner.0).unwrap();
         let nominations = support.voters.iter().map(|voter| {
             ValidatorNomination {
-                nominator: account_to_ss58_for_chain(voter.0.clone(), models::Chain::Polkadot),
+                nominator: voter.0.to_ss58check(),
                 stake: voter.1,
             }
         }).collect();
@@ -123,7 +115,7 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
         // println!("Ledger: {:?}", ledger);
         
         active_validators.push(Validator {
-            stash: account_to_ss58_for_chain(winner.0, models::Chain::Polkadot),
+            stash: winner.0.to_ss58check(),
             total_stake: support.total,
             commission: validator_prefs.commission.deconstruct() as f64 / 1_000_000_000.0,
             blocked: validator_prefs.blocked,
@@ -134,5 +126,6 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
     let simulation_result = SimulationResult {
         active_validators
     };
+
     Ok(simulation_result)
 }

@@ -4,7 +4,7 @@ use jsonrpsee_core::ClientError;
 use jsonrpsee_ws_client::{WsClient, WsClientBuilder};
 
 use parity_scale_codec::{Decode, Encode};
-use pallet_staking::{ActiveEraInfo, Exposure, ValidatorPrefs};
+use pallet_staking::{ActiveEraInfo, Exposure, ValidatorPrefs, slashing::SlashingSpans};
 use sp_staking::{PagedExposureMetadata, ExposurePage};
 use pallet_election_provider_multi_phase::{RoundSnapshot};
 use sp_npos_elections::{VoteWeight};
@@ -17,6 +17,7 @@ use sp_core::storage::{StorageData, StorageKey};
 use sp_core::hashing::{twox_128};
 use frame_support::{Twox64Concat, StorageHasher};
 use subxt::utils::AccountId32;
+use sp_version::RuntimeVersion;
 
 use crate::primitives::{AccountId, Balance, EraIndex};
 
@@ -315,6 +316,19 @@ impl<C: RpcClient> StorageClient<C> {
         let min_validator_bond = self.read::<u128>(self.value_key(b"Staking", b"MinValidatorBond"), at).await?;
         Ok(min_validator_bond)
     }
+
+    pub async fn get_runtime_version(&self, at: Option<H256>) -> Result<RuntimeVersion, Box<dyn std::error::Error>> {
+        let at_val = to_value(at).expect("Block hash serialization infallible");
+        let data: Result<RuntimeVersion, ClientError>  = self.client
+            .rpc_request("state_getRuntimeVersion", (at_val,))
+            .await;
+
+        if data.is_err() {
+            return Err("Error getting runtime version".into());
+        }
+        let data = data.unwrap();
+        Ok(data)
+    }
 }
 
 #[cfg(test)]
@@ -478,3 +492,4 @@ mod tests {
         assert_eq!(result.unwrap(), Some(snapshot_repsonse));
     }
 }
+

@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
 use sp_core::H256;
+use sp_core::crypto::{Ss58Codec};
 
 use crate::{
-    models::{account_to_ss58_for_chain, Chain, Nominator, NominatorStake, Snapshot, SnapshotNominator, SnapshotValidator, StakingConfig, Validator, ValidatorNomination}, primitives::AccountId, storage_client::{RpcClient, StorageClient}
+    models::{Chain, Nominator, NominatorStake, Snapshot, SnapshotNominator, SnapshotValidator, StakingConfig, Validator, ValidatorNomination}, primitives::AccountId, storage_client::{RpcClient, StorageClient}
 };
 
 // Build snapshot of current validators and their nominators
@@ -69,7 +70,7 @@ use crate::{
 //     Ok(SnapshotExposure { validators: validators_vec, nominators, config: staking_config })
 // }
 
-pub async fn build<C: RpcClient>(client: &StorageClient<C>, chain: Chain, block: Option<H256>) -> Result<Snapshot, Box<dyn std::error::Error>> {
+pub async fn build<C: RpcClient>(client: &StorageClient<C>, block: Option<H256>) -> Result<Snapshot, Box<dyn std::error::Error>> {
     let snapshot = client.get_snapshot(block).await;
     if snapshot.is_err() {
         return Err("Error getting snapshot".into());
@@ -92,14 +93,14 @@ pub async fn build<C: RpcClient>(client: &StorageClient<C>, chain: Chain, block:
 
         let validator_prefs = validator_prefs.unwrap();
         validators.push(SnapshotValidator {
-            stash: account_to_ss58_for_chain(target.clone(), chain),
+            stash: target.to_ss58check(),
             commission: validator_prefs.commission.deconstruct() as f64 / 1_000_000_000.0,
             blocked: validator_prefs.blocked,
         });
     }
     for voter in voters {
         let nominator = SnapshotNominator {
-            stash: account_to_ss58_for_chain(voter.0, chain),
+            stash: voter.0.to_ss58check(),
             stake: voter.1 as u128,
             nominations: voter.2.iter().map(|nomination| nomination.clone()).collect(),
         };

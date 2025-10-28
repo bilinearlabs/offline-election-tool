@@ -3170,6 +3170,7 @@ dependencies = [
  "sp-npos-elections 39.0.0",
  "sp-runtime 44.0.0",
  "sp-staking 41.0.0",
+ "sp-version 42.0.0",
  "subxt",
  "tokio",
 ]
