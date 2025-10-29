@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use pallet_election_provider_multi_phase::RoundSnapshot;
 use serde::Serialize;
 use sp_core::{crypto::Ss58Codec, H256};
 use sp_npos_elections::{BalancingConfig, ElectionResult, VoteWeight, assignment_ratio_to_staked_normalized, reduce, seq_phragmen, to_support_map};
@@ -8,7 +7,8 @@ use frame_support::{BoundedVec, pallet_prelude::ConstU32};
 use sp_runtime::{Perbill};
 
 use crate::{
-    SimulateArgs, models::{Validator, ValidatorNomination}, primitives::AccountId, storage_client::{RpcClient, StorageClient}
+    error::AppError,
+    models::{Validator, ValidatorNomination}, primitives::AccountId, storage_client::{RpcClient, StorageClient}
 };
 
 #[derive(Debug, Serialize)]
@@ -19,21 +19,20 @@ pub struct SimulationResult {
 pub async fn simulate_seq_phragmen<C: RpcClient>(
     client: &StorageClient<C>,
     at: Option<H256>,
-    args: SimulateArgs,
+    targets_count: Option<usize>,
+    iterations: usize,
+    apply_reduce: bool,
 ) -> Result<SimulationResult, Box<dyn std::error::Error>> {
-    let desired_targets = if let Some(count) = args.count {
+    let desired_targets = if let Some(count) = targets_count {
         count
     } else {
         let desired_targets = client.get_desired_targets(at).await?;
         desired_targets.unwrap_or(50) as usize
     };
 
-    let snapshot = client.get_snapshot(at).await?;
-
-    if snapshot.is_none() {
-        return Err("No snapshot found".into());
-    }
-    let snapshot: RoundSnapshot<AccountId, (AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = snapshot.unwrap();
+    let snapshot = client.get_snapshot(at)
+        .await?
+        .ok_or_else(|| AppError::NotFound("No snapshot found for the specified block".to_string()))?;
     let voters: Vec<(AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = snapshot.voters.clone();
     let targets: Vec<AccountId> = snapshot.targets.clone();
 
@@ -56,7 +55,7 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
         desired_targets as usize,
         targets,
         filtered_voters.clone(),
-        Some(BalancingConfig { iterations: args.iterations, tolerance: 0 }),
+        Some(BalancingConfig { iterations: iterations, tolerance: 0 }),
     );
     if election_result.is_err() {
         return Err("Election error".into());
@@ -78,7 +77,7 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
     }
     let mut staked_assignments = staked_assignments.unwrap();
     
-    if args.reduce {
+    if apply_reduce {
         let reduced_assignments = reduce(staked_assignments.as_mut());
     }
 

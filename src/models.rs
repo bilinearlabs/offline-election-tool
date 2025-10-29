@@ -1,5 +1,5 @@
 use serde::Serialize;
-use sp_core::crypto::{Ss58AddressFormat, Ss58Codec};
+use sp_core::crypto::{Ss58AddressFormat};
 
 use crate::primitives::{AccountId, Balance};
 

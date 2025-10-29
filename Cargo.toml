@@ -23,8 +23,13 @@ clap = { version = "4.5.50", features = ["derive"] }
 async-trait = "0.1.89"
 mockall = "0.13.1"
 log = "0.4.28"
+env_logger = "0.11"
 subxt = "0.44.0"
 sp-version = "42.0.0"
+axum = { version = "0.8.6", features = ["json", "macros"] }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.20"
+tower-http = { version = "0.6.2", features = ["trace"] }
 
 [profile.dev]
 incremental = true

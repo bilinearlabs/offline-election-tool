@@ -4,6 +4,7 @@ use sp_core::H256;
 use sp_core::crypto::{Ss58Codec};
 
 use crate::{
+    error::AppError,
     models::{Chain, Nominator, NominatorStake, Snapshot, SnapshotNominator, SnapshotValidator, StakingConfig, Validator, ValidatorNomination}, primitives::AccountId, storage_client::{RpcClient, StorageClient}
 };
 
@@ -71,27 +72,20 @@ use crate::{
 // }
 
 pub async fn build<C: RpcClient>(client: &StorageClient<C>, block: Option<H256>) -> Result<Snapshot, Box<dyn std::error::Error>> {
-    let snapshot = client.get_snapshot(block).await;
-    if snapshot.is_err() {
-        return Err("Error getting snapshot".into());
-    }
-    let snapshot = snapshot.unwrap();
-    if snapshot.is_none() {
-        return Err("No snapshot found".into());
-    }
-    let snapshot = snapshot.unwrap();
+    let snapshot = client.get_snapshot(block)
+        .await?
+        .ok_or_else(|| AppError::NotFound("No snapshot found for the specified block".to_string()))?;
     let voters = snapshot.voters;
     let targets = snapshot.targets;
 
     let mut validators: Vec<SnapshotValidator> = Vec::new();
     let mut nominators: Vec<SnapshotNominator> = Vec::new();
     for target in targets {
-        let validator_prefs = client.get_validator_prefs(target.clone(), block).await?;
-        if validator_prefs.is_none() {
-            return Err("Validator prefs not found".into());
-        }
-
-        let validator_prefs = validator_prefs.unwrap();
+        let validator_prefs = client.get_validator_prefs(target.clone(), block)
+            .await
+            .map_err(|e| format!("Error getting validator prefs: {}", e))?;
+        
+        let validator_prefs = validator_prefs.ok_or("Validator prefs not found")?;
         validators.push(SnapshotValidator {
             stash: target.to_ss58check(),
             commission: validator_prefs.commission.deconstruct() as f64 / 1_000_000_000.0,
@@ -107,11 +101,27 @@ pub async fn build<C: RpcClient>(client: &StorageClient<C>, block: Option<H256>)
         nominators.push(nominator);
     }
 
+    // Await all calls first, then construct struct to avoid holding errors across awaits
+    let desired_validators = client.get_validator_count(block)
+        .await
+        .map_err(|e| format!("Error getting validator count: {}", e))?;
+    let max_nominations = client.get_max_nominations(block)
+        .await
+        .map_err(|e| format!("Error getting max nominations: {}", e))?;
+    let min_nominator_bond = client.get_min_nominator_bond(block)
+        .await
+        .map_err(|e| format!("Error getting min nominator bond: {}", e))?
+        .unwrap_or(0);
+    let min_validator_bond = client.get_min_validator_bond(block)
+        .await
+        .map_err(|e| format!("Error getting min validator bond: {}", e))?
+        .unwrap_or(0);
+    
     let staking_config = StakingConfig {
-        desired_validators: client.get_validator_count(block).await?,
-        max_nominations: client.get_max_nominations(block).await?,
-        min_nominator_bond: client.get_min_nominator_bond(block).await?.unwrap_or(0),
-        min_validator_bond: client.get_min_validator_bond(block).await?.unwrap_or(0),
+        desired_validators,
+        max_nominations,
+        min_nominator_bond,
+        min_validator_bond,
     };
     Ok(Snapshot { validators, nominators, config: staking_config })
 }

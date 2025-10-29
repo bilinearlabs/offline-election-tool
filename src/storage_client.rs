@@ -317,10 +317,9 @@ impl<C: RpcClient> StorageClient<C> {
         Ok(min_validator_bond)
     }
 
-    pub async fn get_runtime_version(&self, at: Option<H256>) -> Result<RuntimeVersion, Box<dyn std::error::Error>> {
-        let at_val = to_value(at).expect("Block hash serialization infallible");
+    pub async fn get_runtime_version(&self) -> Result<RuntimeVersion, Box<dyn std::error::Error>> {
         let data: Result<RuntimeVersion, ClientError>  = self.client
-            .rpc_request("state_getRuntimeVersion", (at_val,))
+            .rpc_request("state_getRuntimeVersion", (None::<()>,))
             .await;
 
         if data.is_err() {
