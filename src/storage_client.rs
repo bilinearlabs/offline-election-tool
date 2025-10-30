@@ -4,7 +4,7 @@ use jsonrpsee_core::ClientError;
 use jsonrpsee_ws_client::{WsClient, WsClientBuilder};
 
 use parity_scale_codec::{Decode, Encode};
-use pallet_staking::{ActiveEraInfo, Exposure, ValidatorPrefs, slashing::SlashingSpans};
+use pallet_staking::{ActiveEraInfo, Exposure, ValidatorPrefs};
 use sp_staking::{PagedExposureMetadata, ExposurePage};
 use pallet_election_provider_multi_phase::{RoundSnapshot};
 use sp_npos_elections::{VoteWeight};
@@ -16,25 +16,35 @@ use sp_core::{H256};
 use sp_core::storage::{StorageData, StorageKey};
 use sp_core::hashing::{twox_128};
 use frame_support::{Twox64Concat, StorageHasher};
-use subxt::utils::AccountId32;
 use sp_version::RuntimeVersion;
 
 use crate::primitives::{AccountId, Balance, EraIndex};
 
 
 #[derive(Debug, Clone, Decode)]
-struct StakingLedger {
-    pub stash: AccountId32,
-    pub total: Balance,
-    pub active: Balance,
-    pub unlocking: BoundedVec<UnlockChunk<Balance>, ConstU32<32>>,
+pub struct UnlockChunk<Balance> {
+    #[codec(compact)]
+    pub value: Balance,
+    #[codec(compact)]
+    pub era: u32,
+}
+
+#[derive(Debug, Clone, Decode)]
+pub struct StakingLedger {
+    pub stash: AccountId,
+    #[codec(compact)]
+    pub total: u128,
+    #[codec(compact)]
+    pub active: u128,
+    pub unlocking: BoundedVec<UnlockChunk<u128>, ConstU32<32>>,
     pub legacy_claimed_rewards: BoundedVec<u32, ConstU32<64>>,
 }
 
 #[derive(Debug, Clone, Decode)]
-struct UnlockChunk<Balance> {
-    pub value: Balance,
-    pub era: EraIndex,
+pub struct NominationsLight<AccountId> {
+    pub targets: BoundedVec<AccountId, ConstU32<16>>, // assumes max nominations 16
+    pub submitted_in: EraIndex,
+    pub suppressed: bool,
 }
 
 /// Trait for jsonrpsee client operations to enable dependency injection for testing
@@ -237,6 +247,15 @@ impl<C: RpcClient> StorageClient<C> {
         self.read::<ValidatorPrefs>(validators_key, at).await
     }
 
+    pub async fn get_nominator(&self, nominator: AccountId, at: Option<H256>) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error>> {
+        let nominators_key = self.map_key(
+            b"Staking",
+            b"Nominators",
+            &nominator.encode(),
+        );
+        self.read::<NominationsLight<AccountId>>(nominators_key, at).await
+    }
+
     // get balances
     // pub async fn get_balance(&self, account: AccountId, at: Option<H256>) -> Result<Option<AccountData>, Box<dyn std::error::Error>> {
     //     let balance_key = self.map_key(
@@ -327,6 +346,79 @@ impl<C: RpcClient> StorageClient<C> {
         }
         let data = data.unwrap();
         Ok(data)
+    }
+
+    // Try to get all targets when no snapshot
+    // Get paged keys
+    pub async fn get_keys_paged(&self, prefix: StorageKey, count: u32, start_key: Option<StorageKey>, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>> {
+        let serialized_prefix = to_value(prefix).expect("StorageKey serialization infallible");
+        let serialized_start = start_key.map(|k| to_value(k).expect("StorageKey serialization infallible"));
+        let at_val = to_value(at).expect("Block hash serialization infallible");
+        
+        let keys: Result<Vec<StorageKey>, ClientError> = self.client
+            .rpc_request("state_getKeysPaged", (serialized_prefix, count, serialized_start, at_val))
+            .await;
+        
+        keys.map_err(|e| format!("Error getting keys paged: {}", e).into())
+    }
+
+    /// Get all keys from a storage map by paginating through results
+    pub async fn get_all_keys(&self, prefix: StorageKey, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>> {
+        let mut all_keys = Vec::new();
+        let mut start_key: Option<StorageKey> = None;
+        let page_size = 1000u32;
+
+        loop {
+            let keys = self.get_keys_paged(prefix.clone(), page_size, start_key.clone(), at).await?;
+            
+            if keys.is_empty() {
+                break;
+            }
+            
+            all_keys.extend(keys.clone());
+            
+            if keys.len() < page_size as usize {
+                break;
+            }
+            
+            start_key = keys.last().cloned();
+        }
+        
+        Ok(all_keys)
+    }
+
+    fn extract_key<T: Decode>(&self, key: &StorageKey, prefix_len: usize) -> Option<T> {
+        if key.0.len() > prefix_len + 8 {
+            let mut bytes = &key.0[prefix_len + 8..];
+            T::decode(&mut bytes).ok()
+        } else {
+            None
+        }
+    }
+
+    /// Enumerate all AccountId keys of a Twox64Concat map
+    async fn enumerate_accounts(&self, module: &[u8], storage: &[u8], at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
+        let prefix_key = self.value_key(module, storage);
+        let keys = self.get_all_keys(prefix_key.clone(), at).await?;
+        let mut accounts = Vec::new();
+        for key in keys {
+            if let Some(account) = self.extract_key::<AccountId>(&key, prefix_key.0.len()) {
+                accounts.push(account);
+            }
+        }
+        accounts.sort();
+        accounts.dedup();
+        Ok(accounts)
+    }
+
+    /// Get all validator stash accounts by enumerating Staking.Validators
+    pub async fn get_validators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
+        self.enumerate_accounts(b"Staking", b"Validators", at).await
+    }
+
+    /// Get all nominator stash accounts by enumerating Staking.Nominators
+    pub async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
+        self.enumerate_accounts(b"Staking", b"Nominators", at).await
     }
 }
 
@@ -491,4 +583,6 @@ mod tests {
         assert_eq!(result.unwrap(), Some(snapshot_repsonse));
     }
 }
+
+
 
