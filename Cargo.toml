@@ -22,8 +22,6 @@ sp-runtime = "44.0.0"
 clap = { version = "4.5.50", features = ["derive"] }
 async-trait = "0.1.89"
 mockall = "0.13.1"
-log = "0.4.28"
-env_logger = "0.11"
 sp-version = "42.0.0"
 axum = { version = "0.8.6", features = ["json", "macros"] }
 tracing = "0.1.41"

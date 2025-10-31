@@ -7,7 +7,7 @@ use axum::{
 };
 use tower_http::trace::TraceLayer;
 
-use crate::api::handler;
+use crate::api::handler::{simulate, snapshot};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -20,8 +20,8 @@ pub fn routes(storage_client: Arc<StorageClient<WsClient>>) -> IntoMakeService<R
     };
     
     let app_router = Router::new()
-        .route("/simulate", post(handler::simulate_handler))
-        .route("/snapshot", get(handler::snapshot_handler))
+        .route("/simulate", post(simulate::simulate_handler))
+        .route("/snapshot", get(snapshot::snapshot_handler))
         .with_state(app_state)
         .layer(TraceLayer::new_for_http());
     app_router.into_make_service()

@@ -43,12 +43,13 @@ offline-election-tool [OPTIONS] --rpc-endpoint <RPC_ENDPOINT> <COMMAND>
 
 ### Examples
 
-#### Retrieve actual snapshot (will only work if last block has snapshot):
+#### Retrieve snapshot for latest block:
 ```bash
 cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io snapshot
 ```
+*Note: If the block contains an election snapshot, it will be retrieved. Otherwise, a snapshot will be generated from current staking data.*
 
-#### Simulate election for latest block (will only work if last block has snapshot):
+#### Simulate election for latest block:
 ```bash
 cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io simulate
 ```

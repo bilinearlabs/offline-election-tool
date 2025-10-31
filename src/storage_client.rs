@@ -2,6 +2,7 @@ use jsonrpsee_core::client::ClientT;
 use jsonrpsee_core::traits::ToRpcParams;
 use jsonrpsee_core::ClientError;
 use jsonrpsee_ws_client::{WsClient, WsClientBuilder};
+use tracing::error;
 
 use parity_scale_codec::{Decode, Encode};
 use pallet_staking::{ActiveEraInfo, Exposure, ValidatorPrefs};
@@ -146,9 +147,8 @@ impl<C: RpcClient> StorageClient<C> {
             .await;
 
         if raw.is_err() {
-            // TODO log
-            println!("Error: {:?}", raw.err().unwrap());
-            return Ok(None);
+            error!("Storage read error: {:?}", raw.err().unwrap());
+            return Err("Storage read error".into());
         }
 
         match raw.unwrap() {
@@ -158,8 +158,8 @@ impl<C: RpcClient> StorageClient<C> {
                 match <T as Decode>::decode(&mut encoded.as_slice()) {
                     Ok(value) => Ok(Some(value)),
                     Err(e) => {
-                        println!("Decode error: {:?}", e);
-                        Ok(None)
+                        error!("Decode error: {:?}", e);
+                        Err("Decode error".into())
                     }
                 }
             }

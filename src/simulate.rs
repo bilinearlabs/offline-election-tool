@@ -65,7 +65,6 @@ pub async fn simulate_seq_phragmen<C: RpcClient>(
 
     let supports = to_support_map::<AccountId>( staked_assignments.as_slice());
 
-    // Parallelize validator preferences fetching using join_all
     let validator_futures: Vec<_> = winners.into_iter().map(|winner| {
         let support = supports.get(&winner.0).ok_or("Support not found").cloned();
         async move {

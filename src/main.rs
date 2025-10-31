@@ -1,7 +1,7 @@
-use log::info;
-use sp_core::{ByteArray, H256, crypto::IsWrappedBy};
+use tracing::info;
+use sp_core::H256;
 use clap::{arg, command, Parser, Subcommand};
-use sp_core::crypto::{Ss58Codec, set_default_ss58_version};
+use sp_core::crypto::set_default_ss58_version;
 use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
@@ -95,13 +95,20 @@ fn write_output<T: serde::Serialize>(data: &T, output: Option<String>) -> Result
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing for all commands
+    // Use INFO level for CLI commands, DEBUG level for server
     let args = Args::parse();
     
-    // Only initialize env_logger for non-Server commands
-    // Server will use tracing_subscriber instead
-    if !matches!(args.action, Action::Server { .. }) {
-        env_logger::init();
-    }
+    let log_level = if matches!(args.action, Action::Server { .. }) {
+        tracing::Level::INFO
+    } else {
+        tracing::Level::INFO
+    };
+    
+    tracing_subscriber::fmt()
+        .with_max_level(log_level)
+        .with_target(false)
+        .init();
 
     let client = storage_client::StorageClient::new(&args.rpc_endpoint).await?;
 
@@ -156,9 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             write_output(&snapshot, snapshot_args.output)?;
         }
         Action::Server { address } => {
-            // Initialize tracing subscriber for the server (tower-http uses tracing)
-            // Use try_init to avoid panic if already initialized
-            let _ = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).try_init();
+            info!("Starting server on {}", address);
             let storage_client = Arc::new(client);
             let router = root::routes(storage_client);
             let listener = tokio::net::TcpListener::bind(address).await?;

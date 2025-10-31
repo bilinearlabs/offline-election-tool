@@ -1,6 +1,7 @@
 use sp_core::H256;
 use sp_core::crypto::{Ss58Codec};
 use futures::future::join_all;
+use tracing::info;
 
 use crate::storage_client::VoterData;
 use crate::{
@@ -17,7 +18,6 @@ pub async fn build<C: RpcClient>(client: &StorageClient<C>, block: Option<H256>)
     let targets = snapshot.targets;
     let mut nominators: Vec<SnapshotNominator> = Vec::new();
     
-    // Parallelize validator preferences fetching using join_all
     let validator_futures: Vec<_> = targets.into_iter().map(|target| async move {
         let validator_prefs = client.get_validator_prefs(target.clone(), block)
             .await
@@ -56,6 +56,7 @@ pub async fn get_snapshot_data<C: RpcClient>(client: &StorageClient<C>, block: O
     if snapshot.is_some() {
         return Ok((snapshot.unwrap(), staking_config));
     }
+    info!("No snapshot found, getting validators and nominators from staking storage");
     let mut validators = client.get_validators(block).await?;
     let nominators = client.get_nominators(block).await?;
     
