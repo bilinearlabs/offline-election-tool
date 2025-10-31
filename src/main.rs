@@ -1,7 +1,7 @@
 use log::info;
-use sp_core::H256;
+use sp_core::{ByteArray, H256, crypto::IsWrappedBy};
 use clap::{arg, command, Parser, Subcommand};
-use sp_core::crypto::{set_default_ss58_version};
+use sp_core::crypto::{Ss58Codec, set_default_ss58_version};
 use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;

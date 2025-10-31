@@ -2693,6 +2693,7 @@ dependencies = [
  "clap",
  "env_logger",
  "frame-support 43.0.0",
+ "futures",
  "hex",
  "jsonrpsee-core",
  "jsonrpsee-types",

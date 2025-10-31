@@ -15,13 +15,13 @@ use serde_json::to_value;
 use sp_core::{H256};
 use sp_core::storage::{StorageData, StorageKey};
 use sp_core::hashing::{twox_128};
-use frame_support::{Twox64Concat, StorageHasher};
+use frame_support::{Twox64Concat, Blake2_128Concat, StorageHasher};
 use sp_version::RuntimeVersion;
 
 use crate::primitives::{AccountId, Balance, EraIndex};
 
 
-#[derive(Debug, Clone, Decode)]
+#[derive(Debug, Clone, Decode, Encode)]
 pub struct UnlockChunk<Balance> {
     #[codec(compact)]
     pub value: Balance,
@@ -29,15 +29,15 @@ pub struct UnlockChunk<Balance> {
     pub era: u32,
 }
 
-#[derive(Debug, Clone, Decode)]
+#[derive(Debug, Clone, Decode, Encode)]
 pub struct StakingLedger {
     pub stash: AccountId,
     #[codec(compact)]
     pub total: u128,
     #[codec(compact)]
     pub active: u128,
-    pub unlocking: BoundedVec<UnlockChunk<u128>, ConstU32<32>>,
-    pub legacy_claimed_rewards: BoundedVec<u32, ConstU32<64>>,
+    pub unlocking: Vec<UnlockChunk<u128>>,
+    pub legacy_claimed_rewards: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Decode)]
@@ -47,7 +47,14 @@ pub struct NominationsLight<AccountId> {
     pub suppressed: bool,
 }
 
-/// Trait for jsonrpsee client operations to enable dependency injection for testing
+// Type alias for voter data in election snapshots
+// (voter_account, vote_weight, list_of_nominated_validators)
+pub type VoterData = (AccountId, VoteWeight, BoundedVec<AccountId, ConstU32<16>>);
+
+// Type alias for election snapshot
+pub type ElectionSnapshot = RoundSnapshot<AccountId, VoterData>;
+
+// Trait for jsonrpsee client operations to enable dependency injection for testing
 #[async_trait::async_trait]
 pub trait RpcClient: Send + Sync {
     async fn rpc_request<T, P>(&self, method: &str, params: P) -> Result<T, ClientError>
@@ -56,7 +63,7 @@ pub trait RpcClient: Send + Sync {
         P: ToRpcParams + Send + 'static;
 }
 
-/// Implementation of RpcClient for WsClient
+// Implementation of RpcClient for WsClient
 #[async_trait::async_trait]
 impl RpcClient for WsClient {
     async fn rpc_request<T, P>(&self, method: &str, params: P) -> Result<T, ClientError>
@@ -68,6 +75,7 @@ impl RpcClient for WsClient {
     }
 }
 
+#[derive(Clone)]
 pub struct StorageClient<C: RpcClient> {
     client: C,
 }
@@ -97,12 +105,12 @@ impl<C: RpcClient> StorageClient<C> {
         StorageKey(self.module_prefix(module, storage))
     }
 
-    fn map_key(&self, module: &[u8], storage: &[u8], key: &[u8]) -> StorageKey {
+    fn map_key<H: StorageHasher>(&self, module: &[u8], storage: &[u8], key: &[u8]) -> StorageKey {
         let prefix = self.module_prefix(module, storage);
-        let key_hash = Twox64Concat::hash(key);
-        let mut final_key = Vec::with_capacity(prefix.len() + key_hash.len());
+        let key_hash = H::hash(key);
+        let mut final_key = Vec::with_capacity(prefix.len() + key_hash.as_ref().len());
         final_key.extend_from_slice(&prefix);
-        final_key.extend_from_slice(&key_hash);
+        final_key.extend_from_slice(key_hash.as_ref());
         StorageKey(final_key)
     }
 
@@ -143,12 +151,17 @@ impl<C: RpcClient> StorageClient<C> {
             return Ok(None);
         }
 
-        match 
-        raw.unwrap() {
+        match raw.unwrap() {
             None => Ok(None),
             Some(data) => {
                 let encoded = data.0;
-                Ok(<T as Decode>::decode(&mut encoded.as_slice()).ok())
+                match <T as Decode>::decode(&mut encoded.as_slice()) {
+                    Ok(value) => Ok(Some(value)),
+                    Err(e) => {
+                        println!("Decode error: {:?}", e);
+                        Ok(None)
+                    }
+                }
             }
         }
     }
@@ -239,7 +252,7 @@ impl<C: RpcClient> StorageClient<C> {
 
     // Get validator preferences (commission and blocked status) for a specific validator
     pub async fn get_validator_prefs(&self, validator: AccountId, at: Option<H256>) -> Result<Option<ValidatorPrefs>, Box<dyn std::error::Error>> {
-        let validators_key = self.map_key(
+        let validators_key = self.map_key::<Twox64Concat>(
             b"Staking",
             b"Validators",
             &validator.encode(),
@@ -248,7 +261,7 @@ impl<C: RpcClient> StorageClient<C> {
     }
 
     pub async fn get_nominator(&self, nominator: AccountId, at: Option<H256>) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error>> {
-        let nominators_key = self.map_key(
+        let nominators_key = self.map_key::<Twox64Concat>(
             b"Staking",
             b"Nominators",
             &nominator.encode(),
@@ -256,19 +269,9 @@ impl<C: RpcClient> StorageClient<C> {
         self.read::<NominationsLight<AccountId>>(nominators_key, at).await
     }
 
-    // get balances
-    // pub async fn get_balance(&self, account: AccountId, at: Option<H256>) -> Result<Option<AccountData>, Box<dyn std::error::Error>> {
-    //     let balance_key = self.map_key(
-    //         b"Balances",
-    //         b"Account",
-    //         &account.encode(),
-    //     );
-    //     self.read::<AccountData>(balance_key, at).await
-    // }
-
     // Get controller account for a given stash account
     pub async fn get_controller_from_stash(&self, stash: AccountId, at: Option<H256>) -> Result<Option<AccountId>, Box<dyn std::error::Error>> {
-        let bonded_key = self.map_key(
+        let bonded_key = self.map_key::<Twox64Concat>(
             b"Staking",
             b"Bonded",
             &stash.encode(),
@@ -276,25 +279,20 @@ impl<C: RpcClient> StorageClient<C> {
         self.read::<AccountId>(bonded_key, at).await
     }
 
-    pub async fn ledger(&self, controller: AccountId, at: Option<H256>) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>> {
-        let ledger_key = self.map_key(
-            b"Staking",
-            b"Ledger",
-            &controller.encode(),
-        );
-        self.read::<StakingLedger>(ledger_key, at).await
+    pub async fn ledger(&self, account: AccountId, at: Option<H256>) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>> {
+        //  Blake2_128Concat hasher (used in newer Polkadot versions)
+        let key = self.map_key::<Blake2_128Concat>(b"Staking", b"Ledger", &account.encode());
+
+        self.read::<StakingLedger>(key, at).await
     }
 
     // Only when snapshot is present
-    pub async fn get_snapshot(&self, at: Option<H256>) -> Result<Option<RoundSnapshot<AccountId, (AccountId, VoteWeight, BoundedVec<AccountId, ConstU32<16>>)>>, Box<dyn std::error::Error>> {
+    pub async fn get_snapshot(&self, at: Option<H256>) -> Result<Option<ElectionSnapshot>, Box<dyn std::error::Error>> {
         let snapshot_key = self.value_key(b"ElectionProviderMultiPhase", b"Snapshot");
-        self.read::<RoundSnapshot<AccountId, (AccountId, VoteWeight, BoundedVec<AccountId, ConstU32<16>>)>>(
-            snapshot_key,
-            at
-        ).await
+        self.read::<ElectionSnapshot>(snapshot_key, at).await
     }
 
-    /// Check the current election phase
+    // Check the current election phase
     pub async fn get_election_phase(&self, at: Option<H256>) -> Result<Option<String>, Box<dyn std::error::Error>> {
         let phase_key = self.value_key(b"ElectionProviderMultiPhase", b"CurrentPhase");
         let phase = self.read::<u8>(phase_key, at).await?;
@@ -396,7 +394,7 @@ impl<C: RpcClient> StorageClient<C> {
         }
     }
 
-    /// Enumerate all AccountId keys of a Twox64Concat map
+    // Enumerate all AccountId keys of a Twox64Concat map
     async fn enumerate_accounts(&self, module: &[u8], storage: &[u8], at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
         let prefix_key = self.value_key(module, storage);
         let keys = self.get_all_keys(prefix_key.clone(), at).await?;
@@ -411,12 +409,12 @@ impl<C: RpcClient> StorageClient<C> {
         Ok(accounts)
     }
 
-    /// Get all validator stash accounts by enumerating Staking.Validators
+    // Get all validator stash accounts by enumerating Staking.Validators
     pub async fn get_validators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
         self.enumerate_accounts(b"Staking", b"Validators", at).await
     }
 
-    /// Get all nominator stash accounts by enumerating Staking.Nominators
+    // Get all nominator stash accounts by enumerating Staking.Nominators
     pub async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
         self.enumerate_accounts(b"Staking", b"Nominators", at).await
     }
@@ -473,7 +471,7 @@ mod tests {
         let mock_client = MockRpcClient::new();
         let client = StorageClient { client: mock_client };
         let account_id = create_test_account_id();
-        let key = client.map_key(b"TestModule", b"TestStorage", &account_id.encode());
+        let key = client.map_key::<Twox64Concat>(b"TestModule", b"TestStorage", &account_id.encode());
         
         let prefix = hex::decode("69667818617339ad409c359884450f004348b9f44e633139d8a8187f4eead460").unwrap();
         let key_hash = hex::decode("0d052d00259f2a8f0101010101010101010101010101010101010101010101010101010101010101").unwrap();
@@ -566,7 +564,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_snapshot() {
         let mut mock_client = MockRpcClient::new();
-        let snapshot_repsonse = RoundSnapshot::<AccountId, (AccountId, VoteWeight, BoundedVec<AccountId, ConstU32<16>>)> {
+        let snapshot_repsonse = ElectionSnapshot {
             voters: vec![],
             targets: vec![],
         };
