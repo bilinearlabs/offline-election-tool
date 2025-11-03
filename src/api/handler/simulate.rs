@@ -7,6 +7,7 @@ use crate::{
     api::routes::root::{AppState},
     api::utils,
     error::AppError,
+    models::Algorithm,
     simulate
 };
 
@@ -18,6 +19,7 @@ pub struct SimulateRequestQuery {
 #[derive(Deserialize)]
 pub struct SimulateRequestBody {
     pub count: Option<usize>,
+    pub algorithm: Option<Algorithm>,
     pub iterations: Option<usize>,
     pub reduce: Option<bool>,
 }
@@ -45,10 +47,11 @@ pub async fn simulate_handler(
     
     let storage_client = state.storage_client.as_ref();
     let targets_count = body.count;
+    let algorithm = body.algorithm.unwrap_or(Algorithm::SeqPhragmen);
     let iterations = body.iterations.unwrap_or(0);
     let apply_reduce = body.reduce.unwrap_or(false);
 
-    let (status, response) = match simulate::simulate_seq_phragmen(storage_client, block, targets_count, iterations, apply_reduce).await {
+    let (status, response) = match simulate::simulate(storage_client, block, targets_count, algorithm, iterations, apply_reduce).await {
         Ok(result) => (
             StatusCode::OK,
             SimulateResponse {

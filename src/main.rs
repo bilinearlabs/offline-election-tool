@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
 use crate::api::routes::root;
-use crate::models::Chain;
+use crate::models::{Chain, Algorithm};
 
 // mod network;
 mod storage_client;
@@ -26,6 +26,10 @@ pub struct SimulateArgs {
     /// Count of validators to elect (optional, uses chain default if not specified)
     #[arg(short, long)]
     pub count: Option<usize>,
+
+    /// Election algorithm to use (seq-phragmen or phragmms)
+    #[arg(short, long, default_value = "seq-phragmen")]
+    pub algorithm: Algorithm,
 
     /// Number of iterations for the balancing algorithm
     #[arg(short, long, default_value = "0")]
@@ -53,7 +57,7 @@ pub struct SnapshotArgs {
 
 #[derive(Subcommand, Debug)]
 enum Action {
-    /// Simulate the election using Sequential Phragmen algorithm
+    /// Simulate the election using the specified algorithm (seq_phragmen or phragmms)
     Simulate(SimulateArgs),
     /// Retrieve actual snapshot containing validator candidates and their voters
     Snapshot(SnapshotArgs),
@@ -124,9 +128,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.action {
         Action::Simulate(simulate_args) => {
-            // Block with Snapshot (Signed or Unsigned phase) 
-            // Block with PhaseTransitioned event without ElectionFinalized event after it
-            // 0x7d5c645873ec013d9e1bd844c5fd24c60f5a1a1266c5a02fe5bc35e50a23f750
             let block: Option<H256> = if simulate_args.block == "latest" {
                 None
             } else {
@@ -134,20 +135,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let output = simulate_args.output.clone();
-            info!("Running election simulation...");
+            info!("Running election simulation with {:?} algorithm...", simulate_args.algorithm);
             let targets_count = simulate_args.count;
+            let algorithm = simulate_args.algorithm;
             let iterations = simulate_args.iterations;
             let apply_reduce = simulate_args.reduce;
-            let election_result = simulate::simulate_seq_phragmen(&client, block, targets_count, iterations, apply_reduce).await;
+            let election_result = simulate::simulate(
+                &client,
+                block,
+                targets_count,
+                algorithm,
+                iterations,
+                apply_reduce,
+            ).await;
             if election_result.is_err() {  
                 return Err(format!("Error in election simulation -> {}", election_result.err().unwrap()).into());
             }
             write_output(&election_result.unwrap(), output)?;
         }
         Action::Snapshot(snapshot_args) => {
-            // Block with Snapshot (Signed or Unsigned phase) 
-            // Block with PhaseTransitioned event without ElectionFinalized event after it
-            // 0x7d5c645873ec013d9e1bd844c5fd24c60f5a1a1266c5a02fe5bc35e50a23f750
             let block: Option<H256> = if snapshot_args.block == "latest" {
                 None
             } else {

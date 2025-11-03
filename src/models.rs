@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use sp_core::crypto::{Ss58AddressFormat};
 
 use crate::primitives::{AccountId, Balance};
@@ -8,6 +8,12 @@ pub enum Chain {
     Polkadot,  // SS58 version 0
     Kusama,    // SS58 version 2
     Substrate, // SS58 version 42
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum, Deserialize)]
+pub enum Algorithm {
+    SeqPhragmen,
+    Phragmms,
 }
 
 impl Chain {
@@ -29,10 +35,11 @@ pub struct ValidatorNomination {
 #[derive(Debug, Serialize)]
 pub struct Validator {
     pub stash: String,
-    // pub self_stake: Balance,
+    pub self_stake: Balance,
     pub total_stake: Balance,
     pub commission: f64,
     pub blocked: bool,
+    pub nominations_count: usize,
     pub nominations: Vec<ValidatorNomination>,
 }
 
