@@ -26,7 +26,9 @@ pub struct SimulateRequestBody {
 
 #[derive(Serialize)]
 pub struct SimulateResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<crate::simulate::SimulationResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 

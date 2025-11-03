@@ -18,7 +18,9 @@ pub struct SnapshotRequest {
 
 #[derive(Serialize)]
 pub struct SnapshotResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<crate::models::Snapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 

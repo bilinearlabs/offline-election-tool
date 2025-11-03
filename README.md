@@ -85,3 +85,55 @@ Start server on custom address:
 ```bash
 cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io server --address 0.0.0.0:8080
 ```
+
+## REST API Endpoints
+
+When running in server mode, the following REST API endpoints are available:
+
+### POST /simulate
+
+Simulate an election with specified parameters.
+
+**Query Parameters:**
+- `block` (optional) - Block hash for snapshot (defaults to latest block)
+
+**Request Body (JSON):**
+```json
+{
+  "count": 297,
+  "algorithm": "seq-phragmen",
+  "iterations": 10,
+  "reduce": true
+}
+```
+
+- `count` (optional) - Number of validators to elect (uses chain default if not specified)
+- `algorithm` (optional) - Election algorithm: `"seq-phragmen"` or `"phragmms"` (default: `"seq-phragmen"`)
+- `iterations` (optional) - Number of balancing iterations (default: 0)
+- `reduce` (optional) - Apply reduce algorithm to minimize assignments (default: false)
+
+**Success Response (200 OK):**
+```json
+{
+  "result": {
+    "winners": [...],
+    "assignments": [...]
+  }
+}
+```
+
+### GET /snapshot
+
+Retrieve election snapshot containing validator candidates and their voters.
+
+**Query Parameters:**
+- `block` (optional) - Block hash for snapshot (defaults to latest block)
+
+**Success Response (200 OK):**
+```json
+{
+  "result": {
+    "voters": [...],
+    "targets": [...]
+  }
+}

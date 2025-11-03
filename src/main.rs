@@ -104,7 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     
     let log_level = if matches!(args.action, Action::Server { .. }) {
-        tracing::Level::INFO
+        tracing::Level::DEBUG
     } else {
         tracing::Level::INFO
     };
