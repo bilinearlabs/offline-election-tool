@@ -42,6 +42,10 @@ pub struct SimulateArgs {
     /// Output file path (if not specified, prints to stdout)
     #[arg(short, long)]
     pub output: Option<String>,
+
+    /// Manual override JSON file path for voters and candidates
+    #[arg(short = 'm', long)]
+    pub manual_override: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -140,6 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let algorithm = simulate_args.algorithm;
             let iterations = simulate_args.iterations;
             let apply_reduce = simulate_args.reduce;
+            let manual_override = simulate_args.manual_override.clone();
             let election_result = simulate::simulate(
                 &client,
                 block,
@@ -147,6 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 algorithm,
                 iterations,
                 apply_reduce,
+                manual_override,
             ).await;
             if election_result.is_err() {  
                 return Err(format!("Error in election simulation -> {}", election_result.err().unwrap()).into());

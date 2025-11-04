@@ -30,6 +30,7 @@ offline-election-tool [OPTIONS] --rpc-endpoint <RPC_ENDPOINT> <COMMAND>
 - `-i, --iterations <ITERATIONS>` - Number of iterations for the balancing algorithm (default: 0)
 - `--reduce` - Apply reduce algorithm to minimize output assignments
 - `-o, --output <FILE>` - Write JSON output to file (optional, prints to stdout if not specified)
+- `-m, --manual-override <FILE>` - Path to JSON file for manual override of voters and candidates
 
 ### Snapshot Command Options
 
@@ -69,6 +70,29 @@ cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io simulate --al
 ```bash
 cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io simulate --iterations 10 --reduce
 ```
+
+#### Simulate with manual override:
+```bash
+cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io simulate --manual-override override.json
+```
+
+Manual override JSON file format:
+```json
+{
+  "candidates": ["15S7YtETM31QxYYqubAwRJKRSM4v4Ua6WGFYnx1VuFBnWqdG"],
+  "candidates_remove": [],
+  "voters": [
+    ["15S7YtETM31QxYYqubAwRJKRSM4v4Ua6WGFYnx1VuFBnWqdG", 1000000, ["15S7YtETM31QxYYqubAwRJKRSM4v4Ua6WGFYnx1VuFBnWqdG"]]
+  ],
+  "voters_remove": []
+}
+```
+
+The manual override feature allows you to:
+- Add candidates that may not exist on-chain
+- Remove specific candidates from the election
+- Add or override voters with custom stake amounts (regardless of on-chain bonded amounts)
+- Remove specific voters from the election
 
 #### Save output to files:
 ```bash

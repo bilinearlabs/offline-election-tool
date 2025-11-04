@@ -57,6 +57,7 @@ pub async fn get_snapshot_data<C: RpcClient>(client: &StorageClient<C>, block: O
         return Ok((snapshot.unwrap(), staking_config));
     }
     info!("No snapshot found, getting validators and nominators from staking storage");
+    // TODO check if nominators include validators self-stake as nominations in snapshot
     let mut validators = client.get_validators(block).await?;
     let nominators = client.get_nominators(block).await?;
     

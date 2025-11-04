@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use sp_core::{crypto::Ss58Codec, H256};
 use sp_npos_elections::{BalancingConfig, ElectionResult, VoteWeight, assignment_ratio_to_staked_normalized, reduce, seq_phragmen, phragmms::phragmms, to_support_map};
 use frame_support::{BoundedVec, pallet_prelude::ConstU32};
 use sp_runtime::{Perbill};
 use futures::future::join_all;
+use tracing::info;
 
 use crate::{
     models::{Algorithm, Validator, ValidatorNomination}, primitives::AccountId, snapshot, storage_client::{RpcClient, StorageClient}
@@ -16,6 +17,14 @@ pub struct SimulationResult {
     pub active_validators: Vec<Validator>
 }
 
+#[derive(Debug, Deserialize)]
+struct Override {
+    voters: Vec<(String, u64, Vec<String>)>,
+    voters_remove: Vec<String>,
+    candidates: Vec<String>,
+    candidates_remove: Vec<String>,
+}
+
 pub async fn simulate<C: RpcClient>(
     client: &StorageClient<C>,
     at: Option<H256>,
@@ -23,12 +32,66 @@ pub async fn simulate<C: RpcClient>(
     algorithm: Algorithm,
     iterations: usize,
     apply_reduce: bool,
+    manual_override: Option<String>,
 ) -> Result<SimulationResult, Box<dyn std::error::Error>> {
     let (snapshot, stake_config) = snapshot::get_snapshot_data(client, at)
         .await
         .map_err(|e| format!("Error getting snapshot data: {}", e))?;
-    let voters: Vec<(AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = snapshot.voters.clone();
-    let targets: Vec<AccountId> = snapshot.targets.clone();
+    let mut voters: Vec<(AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = snapshot.voters.clone();
+    let mut targets: Vec<AccountId> = snapshot.targets.clone();
+
+    // Apply manual override if provided
+    if let Some(path) = manual_override {
+        let file = std::fs::read(&path)
+            .map_err(|e| format!("Failed to read manual override file '{}': {}", path, e))?;
+        let manual: Override = serde_json::from_slice(&file)
+            .map_err(|e| format!("Failed to parse manual override JSON: {}", e))?;
+
+        // Add any additional candidates
+        for c in &manual.candidates {
+            let candidate_id = AccountId::from_ss58check(c)?;
+            if targets.contains(&candidate_id) {
+                info!("manual override: {:?} is already a candidate.", c);
+            } else {
+                info!("manual override: {:?} is added as candidate.", c);
+                targets.push(candidate_id);
+            }
+        }
+
+        // Remove candidates in the removal list
+        let candidates_to_remove: Vec<AccountId> = manual.candidates_remove
+            .iter()
+            .map(|c| AccountId::from_ss58check(c))
+            .collect::<Result<_, _>>()?;
+        targets.retain(|c| !candidates_to_remove.contains(c));
+
+        // Add or override voters
+        for v in &manual.voters {
+            let voter_id = AccountId::from_ss58check(&v.0)?;
+            let stake = v.1;
+            let votes: Vec<AccountId> = v.2.iter()
+                .map(|vote| AccountId::from_ss58check(vote))
+                .collect::<Result<_, _>>()?;
+            let bounded_votes: BoundedVec<AccountId, ConstU32<16>> = votes.try_into()
+                .map_err(|_| "Too many nominations (max 16)")?;
+
+            if let Some(existing_voter) = voters.iter_mut().find(|vv| vv.0 == voter_id) {
+                info!("manual override: {:?} is already a voter. Overriding votes.", v.0);
+                existing_voter.1 = stake;
+                existing_voter.2 = bounded_votes;
+            } else {
+                info!("manual override: {:?} is added as voter.", v.0);
+                voters.push((voter_id, stake, bounded_votes));
+            }
+        }
+
+        // Remove voters in the removal list
+        let voters_to_remove: Vec<AccountId> = manual.voters_remove
+            .iter()
+            .map(|v| AccountId::from_ss58check(v))
+            .collect::<Result<_, _>>()?;
+        voters.retain(|v| !voters_to_remove.contains(&v.0));
+    }
 
     // Filter voters
     let min_nominator_bond = stake_config.min_nominator_bond;
@@ -87,13 +150,7 @@ pub async fn simulate<C: RpcClient>(
     let mut staked_assignments = staked_assignments.unwrap();
     
     if apply_reduce {
-        if apply_reduce {
-            let before_count: usize = staked_assignments.iter().map(|a| a.distribution.len()).sum();
-            reduce(staked_assignments.as_mut());
-            let after_count: usize = staked_assignments.iter().map(|a| a.distribution.len()).sum();
-            println!("🔪 Reduce: {} edges → {} edges (removed {})", 
-                     before_count, after_count, before_count - after_count);
-        }
+        reduce(staked_assignments.as_mut());
     }
 
     let supports = to_support_map::<AccountId>( staked_assignments.as_slice());

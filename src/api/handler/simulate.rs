@@ -53,7 +53,7 @@ pub async fn simulate_handler(
     let iterations = body.iterations.unwrap_or(0);
     let apply_reduce = body.reduce.unwrap_or(false);
 
-    let (status, response) = match simulate::simulate(storage_client, block, targets_count, algorithm, iterations, apply_reduce).await {
+    let (status, response) = match simulate::simulate(storage_client, block, targets_count, algorithm, iterations, apply_reduce, None).await {
         Ok(result) => (
             StatusCode::OK,
             SimulateResponse {
