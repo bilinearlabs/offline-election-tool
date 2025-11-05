@@ -16,6 +16,9 @@ mod models;
 mod simulate;
 mod api;
 mod error;
+mod subxt_client;
+mod runtime;
+mod multi_block;
 
 #[derive(Parser, Debug)]
 pub struct SimulateArgs {
@@ -125,6 +128,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "polkadot" => Chain::Polkadot,
         "kusama" => Chain::Kusama,
         "substrate" => Chain::Substrate,
+        "statemint" => Chain::Polkadot,
+        "statemine" => Chain::Kusama,
         _ => return Err("Unsupported chain".into()),
     };
     let chain = args.chain.unwrap_or(runtime_chain);
