@@ -9,3 +9,5 @@ pub type ChainClient = subxt::OnlineClient<subxt::PolkadotConfig>;
 pub type Config = subxt::PolkadotConfig;
 
 pub type Storage = subxt::storage::Storage<Config, ChainClient>;
+
+pub type Hash = subxt::utils::H256;
