@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use crate::storage_client::StorageClient;
+use crate::{storage_client::StorageClient, subxt_client::Client};
 use jsonrpsee_ws_client::WsClient;
 use axum::{
     Router,
@@ -12,11 +12,13 @@ use crate::api::handler::{simulate, snapshot};
 #[derive(Clone)]
 pub struct AppState {
     pub storage_client: Arc<StorageClient<WsClient>>,
+    pub subxt_client: Arc<Client>,
 }
 
-pub fn routes(storage_client: Arc<StorageClient<WsClient>>) -> IntoMakeService<Router> {
+pub fn routes(storage_client: Arc<StorageClient<WsClient>>, subxt_client: Arc<Client>) -> IntoMakeService<Router> {
     let app_state = AppState {
         storage_client,
+        subxt_client,
     };
     
     let app_router = Router::new()

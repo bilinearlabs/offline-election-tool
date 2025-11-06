@@ -81,7 +81,7 @@ pub struct SnapshotValidator {
 pub struct SnapshotNominator {
     pub stash: String,
     pub stake: Balance,
-    pub nominations: Vec<AccountId>,
+    pub nominations: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]

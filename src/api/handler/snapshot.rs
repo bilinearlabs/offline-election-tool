@@ -40,7 +40,7 @@ pub async fn snapshot_handler(
 
     info!("Block: {:?}", block);
 
-    let build_result = snapshot::build(state.storage_client.as_ref(), block).await;
+    let build_result = snapshot::build(state.subxt_client.as_ref(), block).await;
 
     let (status, response) = match build_result {
         Ok(result) => (

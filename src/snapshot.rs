@@ -3,14 +3,18 @@ use sp_core::crypto::{Ss58Codec};
 use futures::future::join_all;
 use tracing::info;
 
+use crate::multi_block::{BlockDetails, MultiBlockClient};
 use crate::storage_client::VoterData;
+use crate::subxt_client::Client;
 use crate::{
     models::{Snapshot, SnapshotNominator, SnapshotValidator, StakingConfig}, 
     storage_client::{ElectionSnapshot, RpcClient, StorageClient}
 };
 
-pub async fn build<C: RpcClient>(client: &StorageClient<C>, block: Option<H256>) -> Result<Snapshot, Box<dyn std::error::Error>> {
-    let (snapshot, staking_config) = get_snapshot_data(client, block)
+pub async fn build(client: &Client, block: Option<H256>) -> Result<Snapshot, Box<dyn std::error::Error>> {
+    let multi_block_client = MultiBlockClient::new(client.clone());
+    let block_details = multi_block_client.get_block_details(block).await?;
+    let (snapshot, staking_config) = get_snapshot_data_from_multi_block(&multi_block_client, &block_details)
         .await
         .map_err(|e| format!("Error getting snapshot data: {}", e))?;
 
@@ -18,17 +22,21 @@ pub async fn build<C: RpcClient>(client: &StorageClient<C>, block: Option<H256>)
     let targets = snapshot.targets;
     let mut nominators: Vec<SnapshotNominator> = Vec::new();
     
-    let validator_futures: Vec<_> = targets.into_iter().map(|target| async move {
-        let validator_prefs = client.get_validator_prefs(target.clone(), block)
-            .await
-            .map_err(|e| format!("Error getting validator prefs: {}", e))?;
-        
-        let validator_prefs = validator_prefs.ok_or("Validator prefs not found")?;
-        Ok::<SnapshotValidator, String>(SnapshotValidator {
-            stash: target.to_ss58check(),
-            commission: validator_prefs.commission.deconstruct() as f64 / 1_000_000_000.0,
-            blocked: validator_prefs.blocked,
-        })
+    let storage = &block_details.storage;
+    
+    let validator_futures: Vec<_> = targets.into_iter().map(|target| {
+        let client = multi_block_client.clone();
+        async move {
+            let validator_prefs = client.get_validator_prefs(storage, target.clone())
+                .await
+                .map_err(|e| format!("Error getting validator prefs: {}", e))?;
+            
+            Ok::<SnapshotValidator, String>(SnapshotValidator {
+                stash: target.to_ss58check(),
+                commission: validator_prefs.commission.deconstruct() as f64 / 1_000_000_000.0,
+                blocked: validator_prefs.blocked,
+            })
+        }
     }).collect();
     
     let validators: Vec<SnapshotValidator> = join_all(validator_futures)
@@ -41,7 +49,7 @@ pub async fn build<C: RpcClient>(client: &StorageClient<C>, block: Option<H256>)
         let nominator = SnapshotNominator {
             stash: voter.0.to_ss58check(),
             stake: voter.1 as u128,
-            nominations: voter.2.iter().map(|nomination| nomination.clone()).collect(),
+            nominations: voter.2.iter().map(|nomination| nomination.to_ss58check()).collect(),
         };
         nominators.push(nominator);
     }
@@ -49,6 +57,35 @@ pub async fn build<C: RpcClient>(client: &StorageClient<C>, block: Option<H256>)
     Ok(Snapshot { validators, nominators, config: staking_config })
 }
 
+pub async fn get_snapshot_data_from_multi_block<C: crate::multi_block::ChainClientTrait>(
+    client: &MultiBlockClient<C>,
+    block_details: &BlockDetails,
+) -> Result<(ElectionSnapshot, StakingConfig), Box<dyn std::error::Error>> {
+    if block_details.phase.has_snapshot() {
+        let voter_snapshot = client.fetch_paged_voter_snapshot(&block_details.storage, block_details.round, block_details.n_pages - 1).await?;
+        let target_snapshot = client.fetch_paged_target_snapshot(&block_details.storage, block_details.round, block_details.n_pages - 1).await?;
+
+        let staking_config = get_staking_config_from_multi_block(client, block_details).await?;
+        return Ok((
+            ElectionSnapshot { voters: voter_snapshot, targets: target_snapshot },
+            staking_config));
+    }
+    info!("No snapshot found, getting validators and nominators from staking storage");
+    // TODO get validators and nominators from staking storage
+    Err("No snapshot found".into())
+}
+
+pub async fn get_staking_config_from_multi_block<C: crate::multi_block::ChainClientTrait>(
+    client: &MultiBlockClient<C>,
+    block_details: &BlockDetails,
+) -> Result<StakingConfig, Box<dyn std::error::Error>> {
+    let max_nominations = client.get_max_nominations().await?;
+    let min_nominator_bond = client.get_min_nominator_bond(&block_details.storage).await?;
+    let min_validator_bond = client.get_min_validator_bond(&block_details.storage).await?;
+    Ok(StakingConfig { desired_validators: block_details.desired_targets, max_nominations, min_nominator_bond, min_validator_bond: min_validator_bond })
+}
+
+// Multi-phase snapshot
 pub async fn get_snapshot_data<C: RpcClient>(client: &StorageClient<C>, block: Option<H256>) -> Result<(ElectionSnapshot, StakingConfig), Box<dyn std::error::Error>> {
     let snapshot = client.get_snapshot(block)
         .await?;

@@ -1,7 +1,6 @@
-use crate::primitives::{ChainClient, Config};
-use std::{sync::Arc, time::Duration};
+use crate::primitives::{ChainClient};
+use std::{time::Duration};
 use subxt::backend::{
-	chain_head::{ChainHeadBackend, ChainHeadBackendBuilder},
 	rpc::reconnecting_rpc_client::{ExponentialBackoff, RpcClient as ReconnectingRpcClient},
 };
 
@@ -25,9 +24,7 @@ impl Client {
 				.await
 				.map_err(|e| subxt::Error::Other(format!("Failed to connect: {e:?}")))?;
 
-		let backend: ChainHeadBackend<Config> =
-			ChainHeadBackendBuilder::default().build_with_background_driver(reconnecting_rpc);
-		let chain_api = ChainClient::from_backend(Arc::new(backend)).await?;
+		let chain_api = ChainClient::from_rpc_client(reconnecting_rpc).await?;
 
 		Ok(Self { chain_api })
 	}
