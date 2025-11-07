@@ -3242,6 +3242,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "frame-election-provider-support 43.0.0",
  "frame-support 43.0.0",
  "futures",
  "hex",

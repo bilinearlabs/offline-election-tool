@@ -31,6 +31,7 @@ tower-http = { version = "0.6.2", features = ["trace"] }
 futures = "0.3.31"
 subxt = { version = "0.44.0", features = ["reconnecting-rpc-client"] }
 pallet-election-provider-multi-block = "0.4.0"
+frame-election-provider-support = "43.0.0"
 
 [profile.dev]
 incremental = true

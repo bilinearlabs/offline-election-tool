@@ -10,6 +10,8 @@ use crate::{
     error::AppError,
     snapshot,
 };
+use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
+use sp_core::crypto::Ss58Codec;
 
 #[derive(Deserialize)]
 pub struct SnapshotRequest {
@@ -23,11 +25,17 @@ pub struct SnapshotResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
-
-pub async fn snapshot_handler(
-    State(state): State<AppState>,
+pub async fn snapshot_handler<T: MinerConfig + Send + Sync + Clone>(
+    State(state): State<AppState<T>>,
     Query(params): Query<SnapshotRequest>,
-) -> (StatusCode, Json<SnapshotResponse>) {
+) -> (StatusCode, Json<SnapshotResponse>)
+where
+    T::AccountId: Ss58Codec + Send,
+    T::TargetSnapshotPerBlock: Send,
+    T::VoterSnapshotPerBlock: Send,
+    T::Pages: Send,
+    T::MaxVotesPerVoter: Send,
+{
     let block = match utils::parse_block(params.block) {
         Ok(block) => block,
         Err(e) => {
@@ -40,7 +48,8 @@ pub async fn snapshot_handler(
 
     info!("Block: {:?}", block);
 
-    let build_result = snapshot::build(state.subxt_client.as_ref(), block).await;
+    let build_result = snapshot::build(
+        &state.multi_block_storage_client, block).await;
 
     let (status, response) = match build_result {
         Ok(result) => (

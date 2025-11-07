@@ -3,6 +3,7 @@ use std::{time::Duration};
 use subxt::backend::{
 	rpc::reconnecting_rpc_client::{ExponentialBackoff, RpcClient as ReconnectingRpcClient},
 };
+use subxt::ext::scale_value;
 
 #[derive(Clone, Debug)]
 pub struct Client {
@@ -32,5 +33,27 @@ impl Client {
 	/// Get a reference to the chain API.
 	pub fn chain_api(&self) -> &ChainClient {
 		&self.chain_api
+	}
+
+	/// Fetch a constant from the chain API.
+	pub async fn fetch_constant<T: serde::de::DeserializeOwned>(
+		&self,
+		pallet: &str,
+		constant_name: &str,
+	) -> Result<T, Box<dyn std::error::Error>> {
+		let constant_key = subxt::dynamic::constant(pallet, constant_name);
+
+		let val = self.chain_api
+			.constants()
+			.at(&constant_key)
+			.map_err(|e| format!("Failed to fetch constant {pallet}::{constant_name}: {e}"))?
+			.to_value()
+			.map_err(|e| format!("Failed to convert constant {pallet}::{constant_name} to value: {e}"))?;
+		
+		let val = scale_value::serde::from_value::<_, T>(val).map_err(|e| {
+			format!("Failed to decode constant {pallet}::{constant_name} as {}: {e}", std::any::type_name::<T>())
+		})?;
+		
+		Ok(val)
 	}
 }

@@ -1,18 +1,24 @@
+use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use sp_core::H256;
 use sp_core::crypto::{Ss58Codec};
 use futures::future::join_all;
 use tracing::info;
 
-use crate::multi_block::{BlockDetails, MultiBlockClient};
+use crate::multi_block_storage_client::{BlockDetails, ChainClientTrait, ElectionSnapshotPage, MultiBlockClient, VoterSnapshotPage};
 use crate::storage_client::VoterData;
-use crate::subxt_client::Client;
 use crate::{
     models::{Snapshot, SnapshotNominator, SnapshotValidator, StakingConfig}, 
     storage_client::{ElectionSnapshot, RpcClient, StorageClient}
 };
 
-pub async fn build(client: &Client, block: Option<H256>) -> Result<Snapshot, Box<dyn std::error::Error>> {
-    let multi_block_client = MultiBlockClient::new(client.clone());
+pub async fn build<C: ChainClientTrait, MC: MinerConfig + Send + Sync>(multi_block_client: &MultiBlockClient<C, MC>, block: Option<H256>) -> Result<Snapshot, Box<dyn std::error::Error>>
+where
+    <MC as MinerConfig>::AccountId: Ss58Codec,
+    MC::TargetSnapshotPerBlock: Send,
+    MC::VoterSnapshotPerBlock: Send,
+    MC::Pages: Send,
+    MC::MaxVotesPerVoter: Send,
+{
     let block_details = multi_block_client.get_block_details(block).await?;
     let (snapshot, staking_config) = get_snapshot_data_from_multi_block(&multi_block_client, &block_details)
         .await
@@ -20,14 +26,12 @@ pub async fn build(client: &Client, block: Option<H256>) -> Result<Snapshot, Box
 
     let voters = snapshot.voters;
     let targets = snapshot.targets;
-    let mut nominators: Vec<SnapshotNominator> = Vec::new();
     
     let storage = &block_details.storage;
     
     let validator_futures: Vec<_> = targets.into_iter().map(|target| {
-        let client = multi_block_client.clone();
         async move {
-            let validator_prefs = client.get_validator_prefs(storage, target.clone())
+            let validator_prefs = multi_block_client.get_validator_prefs(storage, target.clone())
                 .await
                 .map_err(|e| format!("Error getting validator prefs: {}", e))?;
             
@@ -45,29 +49,40 @@ pub async fn build(client: &Client, block: Option<H256>) -> Result<Snapshot, Box
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     
-    for voter in voters {
-        let nominator = SnapshotNominator {
-            stash: voter.0.to_ss58check(),
-            stake: voter.1 as u128,
-            nominations: voter.2.iter().map(|nomination| nomination.to_ss58check()).collect(),
-        };
-        nominators.push(nominator);
+    let mut nominators: Vec<SnapshotNominator> = Vec::new();
+    for voter_page in voters {
+        for voter in voter_page {
+            let nominator = SnapshotNominator {
+                stash: voter.0.to_ss58check(),
+                stake: voter.1 as u128,
+                nominations: voter.2.iter().map(|nomination| nomination.to_ss58check()).collect(),
+            };
+            nominators.push(nominator);
+        }
     }
     
     Ok(Snapshot { validators, nominators, config: staking_config })
 }
 
-pub async fn get_snapshot_data_from_multi_block<C: crate::multi_block::ChainClientTrait>(
-    client: &MultiBlockClient<C>,
+pub async fn get_snapshot_data_from_multi_block<C: crate::multi_block_storage_client::ChainClientTrait, T: MinerConfig>(
+    client: &MultiBlockClient<C, T>,
     block_details: &BlockDetails,
-) -> Result<(ElectionSnapshot, StakingConfig), Box<dyn std::error::Error>> {
+) -> Result<(ElectionSnapshotPage<T>, StakingConfig), Box<dyn std::error::Error>> {
     if block_details.phase.has_snapshot() {
-        let voter_snapshot = client.fetch_paged_voter_snapshot(&block_details.storage, block_details.round, block_details.n_pages - 1).await?;
+        let mut voters: Vec<VoterSnapshotPage<T>> = Vec::new();
+        for page in 0..block_details.n_pages {
+            let voters_page = client.fetch_paged_voter_snapshot(&block_details.storage, block_details.round, page).await?;
+            voters.push(voters_page);
+        }
+
         let target_snapshot = client.fetch_paged_target_snapshot(&block_details.storage, block_details.round, block_details.n_pages - 1).await?;
 
         let staking_config = get_staking_config_from_multi_block(client, block_details).await?;
         return Ok((
-            ElectionSnapshot { voters: voter_snapshot, targets: target_snapshot },
+            ElectionSnapshotPage::<T> {
+                voters: voters,
+                targets: target_snapshot,
+            },
             staking_config));
     }
     info!("No snapshot found, getting validators and nominators from staking storage");
@@ -75,8 +90,8 @@ pub async fn get_snapshot_data_from_multi_block<C: crate::multi_block::ChainClie
     Err("No snapshot found".into())
 }
 
-pub async fn get_staking_config_from_multi_block<C: crate::multi_block::ChainClientTrait>(
-    client: &MultiBlockClient<C>,
+pub async fn get_staking_config_from_multi_block<C: crate::multi_block_storage_client::ChainClientTrait, T: MinerConfig>(
+    client: &MultiBlockClient<C, T>,
     block_details: &BlockDetails,
 ) -> Result<StakingConfig, Box<dyn std::error::Error>> {
     let max_nominations = client.get_max_nominations().await?;

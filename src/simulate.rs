@@ -3,13 +3,18 @@ use std::collections::BTreeMap;
 use serde::{Serialize, Deserialize};
 use sp_core::{crypto::Ss58Codec, H256};
 use sp_npos_elections::{BalancingConfig, ElectionResult, VoteWeight, assignment_ratio_to_staked_normalized, reduce, seq_phragmen, phragmms::phragmms, to_support_map};
+use pallet_election_provider_multi_block::{
+    unsigned::miner::{BaseMiner, MineInput},
+};
+use crate::miner_config::get_balancing_iterations;
+use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use frame_support::{BoundedVec, pallet_prelude::ConstU32};
 use sp_runtime::{Perbill};
 use futures::future::join_all;
 use tracing::info;
 
 use crate::{
-    models::{Algorithm, Validator, ValidatorNomination}, primitives::AccountId, snapshot, storage_client::{RpcClient, StorageClient}
+    models::{Algorithm, Validator, ValidatorNomination}, multi_block_storage_client::{ChainClientTrait, MultiBlockClient}, primitives::AccountId, snapshot, storage_client::{RpcClient, StorageClient}
 };
 
 #[derive(Debug, Serialize)]
@@ -25,15 +30,23 @@ struct Override {
     candidates_remove: Vec<String>,
 }
 
-pub async fn simulate<C: RpcClient>(
+pub async fn simulate<C: RpcClient, SC: ChainClientTrait, MC: MinerConfig>(
     client: &StorageClient<C>,
+    multi_block_client: &MultiBlockClient<SC, MC>,
     at: Option<H256>,
     targets_count: Option<usize>,
     algorithm: Algorithm,
-    iterations: usize,
     apply_reduce: bool,
     manual_override: Option<String>,
-) -> Result<SimulationResult, Box<dyn std::error::Error>> {
+) -> Result<SimulationResult, Box<dyn std::error::Error>>
+where
+    <MC as MinerConfig>::AccountId: Ss58Codec,
+    <MC as MinerConfig>::TargetSnapshotPerBlock: Send,
+    <MC as MinerConfig>::VoterSnapshotPerBlock: Send,
+    <MC as MinerConfig>::Pages: Send,
+    <MC as MinerConfig>::MaxVotesPerVoter: Send,
+{
+    let block_details = multi_block_client.get_block_details(at).await?;
     let (snapshot, stake_config) = snapshot::get_snapshot_data(client, at)
         .await
         .map_err(|e| format!("Error getting snapshot data: {}", e))?;
@@ -106,11 +119,16 @@ pub async fn simulate<C: RpcClient>(
         stake_config.desired_validators as usize
     };
 
+    let iterations = get_balancing_iterations();
     let balancing_config = if iterations > 0 {
         Some(BalancingConfig { iterations: iterations, tolerance: 0 })
     } else {
         None
     };
+
+
+    let (_snapshot, _staking_config) = snapshot::get_snapshot_data_from_multi_block(multi_block_client, &block_details).await?;
+    // TODO new simulate from multi_block
 
     // Run the selected algorithm
     let election_result = match algorithm {

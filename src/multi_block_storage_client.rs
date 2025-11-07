@@ -1,18 +1,26 @@
-use crate::{primitives::{AccountId, ChainClient, Storage}, subxt_client::Client};
+use crate::{primitives::{ChainClient, Storage}, subxt_client::Client};
 use pallet_staking::ValidatorPrefs;
 use parity_scale_codec::{Decode, Encode};
 use parity_scale_codec as codec;
-use sp_npos_elections::VoteWeight;
-use frame_support::{BoundedVec, pallet_prelude::ConstU32};
+use frame_support::BoundedVec;
+use frame_election_provider_support::Voter;
+use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
+use sp_core::Get;
 
 use crate::primitives::Hash;
 use subxt::ext::{scale_value};
+use std::marker::PhantomData;
 
 // Trait for chain client operations to enable dependency injection for testing
 #[async_trait::async_trait]
 pub trait ChainClientTrait: Send + Sync {
     fn chain_api(&self) -> &ChainClient;
     async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error>>;
+    async fn fetch_constant<T: serde::de::DeserializeOwned>(
+        &self,
+        pallet: &str,
+        constant_name: &str,
+    ) -> Result<T, Box<dyn std::error::Error>>;
 }
 
 // Implementation of ChainClientTrait for Client
@@ -28,6 +36,15 @@ impl ChainClientTrait for Client {
         } else {
             Ok(self.chain_api().storage().at_latest().await?)
         }
+    }
+
+    async fn fetch_constant<T: serde::de::DeserializeOwned>(
+        &self,
+        pallet: &str,
+        constant_name: &str,
+    ) -> Result<T, Box<dyn std::error::Error>> {
+        // Call the inherent method on Client using fully qualified syntax to avoid recursion
+        crate::subxt_client::Client::fetch_constant(self, pallet, constant_name).await
     }
 }
 
@@ -82,37 +99,44 @@ impl Phase {
 	}
 }
 
-// Type alias for voter data in election snapshots
-// (voter_account, vote_weight, list_of_nominated_validators)
-pub type VoterData = (AccountId, VoteWeight, BoundedVec<AccountId, ConstU32<16>>);
+// Generic voter type for use with MinerConfig
+pub type VoterData<MC> = Voter<<MC as MinerConfig>::AccountId, <MC as MinerConfig>::MaxVotesPerVoter>;
 
-#[derive(Clone)]
-pub struct MultiBlockClient<C: ChainClientTrait> {
-    client: C,
+pub type VoterSnapshotPage<MC: MinerConfig> = 
+	BoundedVec<VoterData<MC>, <MC as MinerConfig>::VoterSnapshotPerBlock>;
+
+// Type aliases for snapshot pages using MinerConfig
+pub type TargetSnapshotPage<MC: MinerConfig> =
+	BoundedVec<<MC as MinerConfig>::AccountId, <MC as MinerConfig>::TargetSnapshotPerBlock>;
+
+pub struct ElectionSnapshotPage<MC: MinerConfig> {
+	pub voters: Vec<VoterSnapshotPage<MC>>,
+	pub targets: TargetSnapshotPage<MC>,
 }
 
-impl MultiBlockClient<Client> {
+pub struct MultiBlockClient<C: ChainClientTrait, MC: MinerConfig> {
+    client: C,
+    _phantom: PhantomData<MC>,
+}
+
+impl<MC: MinerConfig> MultiBlockClient<Client, MC> {
     pub fn new(client: Client) -> Self {
-        Self { client }
+        Self { client, _phantom: PhantomData }
     }
 }
 
-impl<C: ChainClientTrait> MultiBlockClient<C> {
+impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
     pub async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error>> {
         self.client.get_storage(block).await
     }
 
-    /// Get block-specific details for a given block.
-    /// This creates a snapshot of the block's state including storage.
+    // Get block-specific details for a given block.
     pub async fn get_block_details(&self, block: Option<Hash>) -> Result<BlockDetails, Box<dyn std::error::Error>> {
         let storage = self.get_storage(block).await?;
-        println!("Storage");
 		let phase = self.get_phase(&storage).await?;
-        println!("Phase: {:?}", phase);
         let round = self.get_round(&storage).await?;
         let desired_targets = self.get_desired_targets(&storage, round).await.unwrap_or(600);
-		
-		let n_pages = self.fetch_constant::<u32>("MultiBlockElection", "Pages").await?;
+		let n_pages = MC::Pages::get();
 		let block_number = self.get_block_number(&storage).await?;
         Ok(BlockDetails { 
 			storage, 
@@ -122,28 +146,6 @@ impl<C: ChainClientTrait> MultiBlockClient<C> {
 			desired_targets, 
 			block_number 
 		})
-    }
-
-    pub async fn fetch_constant<T: serde::de::DeserializeOwned>(
-        &self,
-        pallet: &str,
-        constant_name: &str,
-    ) -> Result<T, Box<dyn std::error::Error>> {
-        let constant_key = subxt::dynamic::constant(pallet, constant_name);
-
-        let val = self.client
-            .chain_api()
-            .constants()
-            .at(&constant_key)
-            .map_err(|e| format!("Failed to fetch constant {pallet}::{constant_name}: {e}"))?
-            .to_value()
-            .map_err(|e| format!("Failed to convert constant {pallet}::{constant_name} to value: {e}"))?;
-        
-        let val = scale_value::serde::from_value::<_, T>(val).map_err(|e| {
-            format!("Failed to decode constant {pallet}::{constant_name} as {}: {e}", std::any::type_name::<T>())
-        })?;
-        
-        Ok(val)
     }
 
     pub async fn get_phase(&self, storage: &Storage) -> Result<Phase, Box<dyn std::error::Error>> {
@@ -206,7 +208,7 @@ impl<C: ChainClientTrait> MultiBlockClient<C> {
         Ok(min_validator_bond)
     }
 
-    pub async fn fetch_paged_voter_snapshot(&self, storage: &Storage, round: u32, page: u32) -> Result<Vec<VoterData>, Box<dyn std::error::Error>> {
+    pub async fn fetch_paged_voter_snapshot(&self, storage: &Storage, round: u32, page: u32) -> Result<VoterSnapshotPage<MC>, Box<dyn std::error::Error>> {
         let storage_key = subxt::dynamic::storage(
             "MultiBlockElection",
             "PagedVoterSnapshot",
@@ -216,12 +218,12 @@ impl<C: ChainClientTrait> MultiBlockClient<C> {
             .await?
             .ok_or("Voter snapshot not found")?;
 
-        let voter_snapshot: Vec<VoterData> = codec::Decode::decode(&mut voter_snapshot_entry.encoded())?;
+        let voter_snapshot: VoterSnapshotPage<MC> = codec::Decode::decode(&mut voter_snapshot_entry.encoded())?;
 
         Ok(voter_snapshot)
     }
 
-    pub async fn fetch_paged_target_snapshot(&self, storage: &Storage, round: u32, page: u32) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
+    pub async fn fetch_paged_target_snapshot(&self, storage: &Storage, round: u32, page: u32) -> Result<TargetSnapshotPage<MC>, Box<dyn std::error::Error>> {
         let storage_key = subxt::dynamic::storage(
             "MultiBlockElection",
             "PagedTargetSnapshot",
@@ -230,20 +232,11 @@ impl<C: ChainClientTrait> MultiBlockClient<C> {
         let target_snapshot_entry = storage.fetch(&storage_key)
             .await?
             .ok_or("Target snapshot not found")?;
-        let target_snapshot: Vec<AccountId> = codec::Decode::decode(&mut target_snapshot_entry.encoded())?;
+        let target_snapshot: TargetSnapshotPage<MC> = codec::Decode::decode(&mut target_snapshot_entry.encoded())?;
         Ok(target_snapshot)
     }
-
-    pub async fn get_nominators(&self, storage: &Storage) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
-        let storage_key = subxt::dynamic::storage("MultiBlockElection", "Nominators", vec![]);
-        let nominators_entry = storage.fetch(&storage_key)
-            .await?
-            .ok_or("Nominators not found")?;
-        let nominators: Vec<AccountId> = codec::Decode::decode(&mut nominators_entry.encoded())?;
-        Ok(nominators)
-    }
-
-    pub async fn get_validator_prefs(&self, storage: &Storage, validator: AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error>> {
+    
+    pub async fn get_validator_prefs(&self, storage: &Storage, validator: <MC as MinerConfig>::AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error>> {
         let encoded_validator = validator.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Validators", vec![scale_value::Value::from(encoded_validator)]);
         let validator_prefs_entry = storage.fetch(&storage_key)

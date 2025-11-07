@@ -8,8 +8,10 @@ use crate::{
     api::utils,
     error::AppError,
     models::Algorithm,
-    simulate
+    simulate,
+    miner_config,
 };
+use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 
 #[derive(Deserialize)]
 pub struct SimulateRequestQuery {
@@ -32,11 +34,18 @@ pub struct SimulateResponse {
     pub error: Option<String>,
 }
 
-pub async fn simulate_handler(
-    State(state): State<AppState>,
+pub async fn simulate_handler<T: MinerConfig + Send + Sync + Clone>(
+    State(state): State<AppState<T>>,
     Query(params): Query<SimulateRequestQuery>,
     Json(body): Json<SimulateRequestBody>,
-) -> (StatusCode, Json<SimulateResponse>) {
+) -> (StatusCode, Json<SimulateResponse>)
+where
+    T::AccountId: From<crate::primitives::AccountId> + Clone + sp_core::crypto::Ss58Codec + Send,
+    T::TargetSnapshotPerBlock: Send,
+    T::VoterSnapshotPerBlock: Send,
+    T::Pages: Send,
+    T::MaxVotesPerVoter: Send,
+{
     let block = match utils::parse_block(params.block) {
         Ok(block) => block,
         Err(e) => {
@@ -48,12 +57,24 @@ pub async fn simulate_handler(
     };
     
     let storage_client = state.storage_client.as_ref();
+    let multi_block_client = state.multi_block_storage_client.as_ref();
     let targets_count = body.count;
     let algorithm = body.algorithm.unwrap_or(Algorithm::SeqPhragmen);
     let iterations = body.iterations.unwrap_or(0);
     let apply_reduce = body.reduce.unwrap_or(false);
+    
+    // Set balancing iterations from request
+    miner_config::set_balancing_iterations(iterations);
 
-    let (status, response) = match simulate::simulate(storage_client, block, targets_count, algorithm, iterations, apply_reduce, None).await {
+    let (status, response) = match simulate::simulate(
+        storage_client,
+        multi_block_client,
+        block,
+        targets_count,
+        algorithm,
+        apply_reduce,
+        None,
+    ).await {
         Ok(result) => (
             StatusCode::OK,
             SimulateResponse {

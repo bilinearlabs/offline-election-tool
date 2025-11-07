@@ -7,8 +7,8 @@ use std::io::Write;
 use std::sync::Arc;
 use crate::api::routes::root;
 use crate::models::{Chain, Algorithm};
-use crate::multi_block::VoterData;
-use crate::primitives::Hash;
+use crate::multi_block_storage_client::MultiBlockClient;
+use crate::subxt_client::Client;
 
 // mod network;
 mod storage_client;
@@ -19,7 +19,8 @@ mod simulate;
 mod api;
 mod error;
 mod subxt_client;
-mod multi_block;
+mod multi_block_storage_client;
+mod miner_config;
 
 #[derive(Parser, Debug)]
 pub struct SimulateArgs {
@@ -123,7 +124,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let client = storage_client::StorageClient::new(&args.rpc_endpoint).await?;
-    let subxt_client = subxt_client::Client::new(&args.rpc_endpoint).await?;
 
     let runtime_version = client.get_runtime_version().await?;
     let runtime_chain = match runtime_version.spec_name.to_string().as_str() {
@@ -136,6 +136,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let chain = args.chain.unwrap_or(runtime_chain);
     set_default_ss58_version(chain.ss58_address_format());
+
+    let subxt_client = subxt_client::Client::new(&args.rpc_endpoint).await?;
+
+    // Fetch all miner constants from chain API
+    let miner_constants = miner_config::fetch_miner_constants(&subxt_client).await?;
+    info!("Fetched miner constants: pages={}, max_winners_per_page={}, max_backers_per_winner={}, voter_snapshot_per_block={}, target_snapshot_per_block={}, max_length={}, max_votes_per_voter={}",
+        miner_constants.pages,
+        miner_constants.max_winners_per_page,
+        miner_constants.max_backers_per_winner,
+        miner_constants.voter_snapshot_per_block,
+        miner_constants.target_snapshot_per_block,
+        miner_constants.max_length,
+        miner_constants.max_votes_per_voter
+    );
+    
+    // Set runtime constants
+    miner_config::set_runtime_constants(miner_constants.clone());
+    
+    // Set balancing iterations from args if simulating
+    if let Action::Simulate(ref simulate_args) = args.action {
+        miner_config::set_balancing_iterations(simulate_args.iterations);
+    }
 
     match args.action {
         Action::Simulate(simulate_args) => {
@@ -150,17 +172,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let targets_count = simulate_args.count;
             let algorithm = simulate_args.algorithm;
             let iterations = simulate_args.iterations;
+            miner_config::set_balancing_iterations(iterations);
             let apply_reduce = simulate_args.reduce;
             let manual_override = simulate_args.manual_override.clone();
-            let election_result = simulate::simulate(
-                &client,
-                block,
-                targets_count,
-                algorithm,
-                iterations,
-                apply_reduce,
-                manual_override,
-            ).await;
+            
+            let election_result = with_miner_config!(chain, {
+                let multi_block_client = MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone());
+                simulate::simulate::<_, Client, MinerConfig>(
+                    &client,
+                    &multi_block_client,
+                    block,
+                    targets_count,
+                    algorithm,
+                    apply_reduce,
+                    manual_override,
+                ).await
+            });
             if election_result.is_err() {  
                 return Err(format!("Error in election simulation -> {}", election_result.err().unwrap()).into());
             }
@@ -174,7 +201,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             info!("Taking snapshot...");
-            let snapshot = snapshot::build(&subxt_client, block).await;
+            let snapshot = with_miner_config!(chain, {
+                let multi_block_client = MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone());
+                snapshot::build::<Client, MinerConfig>(&multi_block_client, block).await
+            });
             if snapshot.is_err() {
                 return Err(format!("Error generating snapshot -> {}", snapshot.err().unwrap()).into());
             }
@@ -184,12 +214,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Action::Server { address } => {
             info!("Starting server on {}", address);
             let storage_client = Arc::new(client);
-            let subxt_client = Arc::new(subxt_client);
-            let router = root::routes(storage_client, subxt_client);
             let listener = tokio::net::TcpListener::bind(address).await?;
-            axum::serve(listener, router)
-                .await
-                .unwrap_or_else(|e| panic!("Error starting server: {}", e));
+            with_miner_config!(chain, {
+                let multi_block_client = Arc::new(MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone()));
+                let router = root::routes::<MinerConfig>(storage_client, multi_block_client, chain);
+                axum::serve(listener, router)
+                    .await
+                    .unwrap_or_else(|e| panic!("Error starting server: {}", e));
+            });
         }
     }
     Ok(())
