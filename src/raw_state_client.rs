@@ -10,7 +10,7 @@ use serde_json::to_value;
 use sp_core::{H256};
 use sp_core::storage::{StorageData, StorageKey};
 use sp_core::hashing::{twox_128};
-use frame_support::{Twox64Concat, Blake2_128Concat, StorageHasher};
+use frame_support::{Twox64Concat, StorageHasher};
 use sp_version::RuntimeVersion;
 
 use crate::primitives::{AccountId, EraIndex};
@@ -163,33 +163,6 @@ impl<C: RpcClient> RawClient<C> {
         let data = data.unwrap();
         Ok(data)
     }
-
-    pub async fn get_nominator(&self, nominator: AccountId, at: Option<H256>) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error>> {
-        let nominators_key = self.map_key::<Twox64Concat>(
-            b"Staking",
-            b"Nominators",
-            &nominator.encode(),
-        );
-        self.read::<NominationsLight<AccountId>>(nominators_key, at).await
-    }
-
-    // Get controller account for a given stash account
-    pub async fn get_controller_from_stash(&self, stash: AccountId, at: Option<H256>) -> Result<Option<AccountId>, Box<dyn std::error::Error>> {
-        let bonded_key = self.map_key::<Twox64Concat>(
-            b"Staking",
-            b"Bonded",
-            &stash.encode(),
-        );
-        self.read::<AccountId>(bonded_key, at).await
-    }
-
-    pub async fn ledger(&self, account: AccountId, at: Option<H256>) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>> {
-        //  Blake2_128Concat hasher (used in newer Polkadot versions)
-        let key = self.map_key::<Blake2_128Concat>(b"Staking", b"Ledger", &account.encode());
-
-        self.read::<StakingLedger>(key, at).await
-    }
-
 
     // Get all targets when no snapshot
     // Get paged keys
@@ -390,40 +363,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_validator_prefs() {
+    async fn test_get_runtime_version() {
         let mut mock_client = MockRpcClient::new();
-        let account_id = create_test_account_id();
-        
-        mock_client
-            .expect_rpc_request()
-            .with(eq("state_getStorage"), mockall::predicate::always())
-            .times(1)
-            .returning(move |_: &str, _: (serde_json::Value, serde_json::Value)| Ok(Some(StorageData(ValidatorPrefs { commission: Perbill::from_percent(10), blocked: false }.encode()))));
-        
-        let client = RawClient { client: mock_client };
-        let result = client.get_validator_prefs(account_id, None).await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some(ValidatorPrefs { commission: Perbill::from_percent(10), blocked: false }));
-    }
-
-    #[tokio::test]
-    async fn test_get_snapshot() {
-        let mut mock_client = MockRpcClient::new();
-        let snapshot_repsonse = ElectionSnapshot {
-            voters: vec![],
-            targets: vec![],
+        let runtime_version = RuntimeVersion {
+            spec_name: "test".into(),
+            impl_name: "test".into(),
+            authoring_version: 1,
+            spec_version: 1,
+            impl_version: 1,
+            apis: vec![].into(),
+            transaction_version: 1,
+            system_version: 1,
         };
-        let snapshot_repsonse_for_mock = snapshot_repsonse.clone();
+        let runtime_version_for_mock = runtime_version.clone();
         mock_client
-            .expect_rpc_request()
-            .with(eq("state_getStorage"), mockall::predicate::always())
-            .times(1)
-            .returning(move |_: &str, _: (serde_json::Value, serde_json::Value)| Ok(Some(StorageData(snapshot_repsonse_for_mock.encode()))));
+            .expect_rpc_request::<RuntimeVersion, (Option<()>,)>()
+            .with(eq("state_getRuntimeVersion"), mockall::predicate::always())
+            .returning(move |_, _| Ok(runtime_version_for_mock.clone()));
         let client = RawClient { client: mock_client };
-        let result = client.get_snapshot(None).await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some(snapshot_repsonse));
+        let result = client.get_runtime_version().await;
+        assert_eq!(result.unwrap(), runtime_version);
     }
 }
 

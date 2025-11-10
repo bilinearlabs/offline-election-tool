@@ -1,4 +1,5 @@
-use crate::{primitives::{ChainClient, Storage}, subxt_client::Client};
+use crate::{primitives::Storage, subxt_client::Client};
+use crate::raw_state_client::{NominationsLight, StakingLedger};
 use pallet_staking::ValidatorPrefs;
 use parity_scale_codec::{Decode, Encode};
 use parity_scale_codec as codec;
@@ -236,6 +237,43 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
             .ok_or("ValidatorPrefs not found")?;
         let validator_prefs: ValidatorPrefs = codec::Decode::decode(&mut validator_prefs_entry.encoded())?;
         Ok(validator_prefs)
+    }
+
+    pub async fn get_nominator(&self, storage: &Storage, nominator: <MC as MinerConfig>::AccountId) -> Result<Option<NominationsLight<<MC as MinerConfig>::AccountId>>, Box<dyn std::error::Error>> {
+        let encoded_nominator = nominator.encode();
+        let storage_key = subxt::dynamic::storage("Staking", "Nominators", vec![scale_value::Value::from(encoded_nominator)]);
+        match storage.fetch(&storage_key).await? {
+            Some(entry) => {
+                let nominations: NominationsLight<<MC as MinerConfig>::AccountId> = codec::Decode::decode(&mut entry.encoded())?;
+                Ok(Some(nominations))
+            }
+            None => Ok(None),
+        }
+    }
+
+    // Get controller account for a given stash account
+    pub async fn get_controller_from_stash(&self, storage: &Storage, stash: <MC as MinerConfig>::AccountId) -> Result<Option<<MC as MinerConfig>::AccountId>, Box<dyn std::error::Error>> {
+        let encoded_stash = stash.encode();
+        let storage_key = subxt::dynamic::storage("Staking", "Bonded", vec![scale_value::Value::from(encoded_stash)]);
+        match storage.fetch(&storage_key).await? {
+            Some(entry) => {
+                let controller: <MC as MinerConfig>::AccountId = codec::Decode::decode(&mut entry.encoded())?;
+                Ok(Some(controller))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub async fn ledger(&self, storage: &Storage, account: <MC as MinerConfig>::AccountId) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>> {
+        let encoded_account = account.encode();
+        let storage_key = subxt::dynamic::storage("Staking", "Ledger", vec![scale_value::Value::from(encoded_account)]);
+        match storage.fetch(&storage_key).await? {
+            Some(entry) => {
+                let ledger: StakingLedger = codec::Decode::decode(&mut entry.encoded())?;
+                Ok(Some(ledger))
+            }
+            None => Ok(None),
+        }
     }
 }
 

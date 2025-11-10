@@ -134,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "statemine" => Chain::Kusama,
         _ => return Err("Unsupported chain".into()),
     };
-    info!("Runtime version: {:?}", runtime_version);
+
     let chain = args.chain.unwrap_or(runtime_chain);
     set_default_ss58_version(chain.ss58_address_format());
 

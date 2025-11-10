@@ -97,31 +97,43 @@ where
     info!("No snapshot found, getting validators and nominators from staking storage");
 
     let nominators = raw_client.get_nominators(block_details.block_hash).await?;
-    let mut validators = raw_client.get_validators(block_details.block_hash).await?;
+    let validators = raw_client.get_validators(block_details.block_hash).await?;
+
+    // Convert validators and nominators to MC::AccountId type
+    let mut validators_mc: Vec<<MC as MinerConfig>::AccountId> = validators.into_iter().map(|v| v.into()).collect();
+    let nominators_mc: Vec<<MC as MinerConfig>::AccountId> = nominators.into_iter().map(|v| v.into()).collect();
 
     // Prepare data for ElectionSnapshotPage
     let min_bond = staking_config.min_nominator_bond;
 
-    let nominator_futures: Vec<_> = nominators.into_iter().map(|nominator| async move {
-        let nominations = raw_client.get_nominator(nominator.clone(), block_details.block_hash).await
-            .map_err(|e| e.to_string())?
-            .filter(|n| !n.suppressed);
-        let nominations = match nominations {
-            Some(n) => n,
-            None => return Ok::<Option<VoterData<MC>>, String>(None),
-        };
-        let stake = raw_client.ledger(nominator.clone(), block_details.block_hash).await
-            .map_err(|e| e.to_string())?
-            .filter(|s| s.active >= min_bond);
-        let stake = match stake {
-            Some(s) => s,
-            None => return Ok(None),
-        };
-        let account_id_mc: <MC as MinerConfig>::AccountId = nominator.into();
-        let targets_mc = BoundedVec::try_from(
-            nominations.targets.into_iter().map(|t| t.into()).collect::<Vec<_>>()
-        ).map_err(|_| "Too many targets in voter".to_string())?;
-        Ok(Some((account_id_mc, stake.active as u64, targets_mc)))
+    let nominator_futures: Vec<_> = nominators_mc.into_iter().map(|nominator| {
+        let storage = &block_details.storage;
+        async move {
+            let nominations = client.get_nominator(storage, nominator.clone()).await
+                .map_err(|e| e.to_string())?
+                .filter(|n| !n.suppressed);
+            let nominations = match nominations {
+                Some(n) => n,
+                None => return Ok::<Option<VoterData<MC>>, String>(None),
+            };
+            let controller = client.get_controller_from_stash(storage, nominator.clone()).await
+                .map_err(|e| e.to_string())?;
+            if controller.is_none() {
+                return Ok(None);
+            }
+            let controller = controller.unwrap();
+            let stake = client.ledger(storage, controller).await
+                .map_err(|e| e.to_string())?
+                .filter(|s| s.active >= min_bond);
+            let stake = match stake {
+                Some(s) => s,
+                None => return Ok(None),
+            };
+            let targets_mc = BoundedVec::try_from(
+                nominations.targets.into_iter().map(|t| t.into()).collect::<Vec<_>>()
+            ).map_err(|_| "Too many targets in voter".to_string())?;
+            Ok(Some((nominator, stake.active as u64, targets_mc)))
+        }
     }).collect();
     
     let voters: Vec<VoterData<MC>> = join_all(nominator_futures)
@@ -134,13 +146,23 @@ where
     let min_validator_bond = staking_config.min_validator_bond;
     
     if min_validator_bond > 0 {
-        let validators_futures: Vec<_> = validators.into_iter().map(|validator| async move {
-            let has_sufficient_bond = raw_client.ledger(validator.clone(), block_details.block_hash).await
-                .map_err(|e| e.to_string())?
-                .map_or(false, |l| l.active >= min_validator_bond);
-            Ok::<Option<crate::primitives::AccountId>, String>(has_sufficient_bond.then_some(validator))
+        let storage = &block_details.storage;
+        let validators_futures: Vec<_> = validators_mc.into_iter().map(|validator| {
+            let client = client;
+            async move {
+                let controller = client.get_controller_from_stash(storage, validator.clone()).await
+                    .map_err(|e| e.to_string())?;
+                if controller.is_none() {
+                    return Ok(None);
+                }
+                let controller = controller.unwrap();
+                let has_sufficient_bond = client.ledger(storage, controller).await
+                    .map_err(|e| e.to_string())?
+                    .map_or(false, |l| l.active >= min_validator_bond);
+                Ok::<Option<<MC as MinerConfig>::AccountId>, String>(has_sufficient_bond.then_some(validator))
+            }
         }).collect();
-        validators = join_all(validators_futures)
+        validators_mc = join_all(validators_futures)
             .await
             .into_iter()
             .filter_map(|result| result.ok().flatten())
@@ -157,7 +179,7 @@ where
         .map_err(|_| "Too many voter pages")?;
 
     let targets = TargetSnapshotPage::<MC>::try_from(
-        validators.into_iter().map(|v| v.into()).collect::<Vec<_>>()
+        validators_mc.into_iter().map(|v| v.into()).collect::<Vec<<MC as MinerConfig>::AccountId>>()
     ).map_err(|_| "Too many targets")?;
 
     let election_snapshot_page = ElectionSnapshotPage::<MC> {
