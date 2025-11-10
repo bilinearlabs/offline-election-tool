@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use crate::{multi_block_storage_client::MultiBlockClient, storage_client::StorageClient, subxt_client::Client, models::Chain, primitives::AccountId};
+use crate::{models::Chain, multi_block_state_client::MultiBlockClient, primitives::AccountId, raw_state_client::{self, RawClient}, subxt_client::Client};
 use jsonrpsee_ws_client::WsClient;
 use axum::{
     Router,
@@ -19,8 +19,8 @@ where
     <T as MinerConfig>::Pages: Send,
     <T as MinerConfig>::MaxVotesPerVoter: Send,
 {
-    pub storage_client: Arc<StorageClient<WsClient>>,
-    pub multi_block_storage_client: Arc<MultiBlockClient<Client, T>>,
+    pub raw_state_client: Arc<RawClient<WsClient>>,
+    pub multi_block_state_client: Arc<MultiBlockClient<Client, T>>,
     pub chain: Chain,
 }
 
@@ -34,24 +34,25 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            storage_client: self.storage_client.clone(),
-            multi_block_storage_client: self.multi_block_storage_client.clone(),
+            raw_state_client: self.raw_state_client.clone(),
+            multi_block_state_client: self.multi_block_state_client.clone(),
             chain: self.chain.clone(),
         }
     }
 }
 
-pub fn routes<T: MinerConfig + Send + Sync + Clone + 'static>(storage_client: Arc<StorageClient<WsClient>>, multi_block_storage_client: Arc<MultiBlockClient<Client, T>>, chain: Chain) -> IntoMakeService<Router>
+pub fn routes<T: MinerConfig + Send + Sync + Clone + 'static>(raw_state_client: Arc<RawClient<WsClient>>, multi_block_state_client: Arc<MultiBlockClient<Client, T>>, chain: Chain) -> IntoMakeService<Router>
 where
     T::AccountId: From<AccountId> + Clone + Ss58Codec + Send + 'static,
     T::TargetSnapshotPerBlock: Send + 'static,
     T::VoterSnapshotPerBlock: Send + 'static,
     T::Pages: Send + 'static,
     T::MaxVotesPerVoter: Send + 'static,
+    T::Solution: Send + 'static,
 {
     let app_state = AppState {
-        storage_client,
-        multi_block_storage_client,
+        raw_state_client,
+        multi_block_state_client,
         chain,
     };
     

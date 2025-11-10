@@ -2,11 +2,12 @@ use axum::{
     extract::{Query, State}, http::StatusCode, response::Json
 };
 use serde::{Deserialize, Serialize};
+use sp_core::crypto::Ss58Codec;
 
 use crate::{
     api::routes::root::{AppState},
     api::utils,
-    error::AppError,
+    api::error::AppError,
     models::Algorithm,
     simulate,
     miner_config,
@@ -40,11 +41,12 @@ pub async fn simulate_handler<T: MinerConfig + Send + Sync + Clone>(
     Json(body): Json<SimulateRequestBody>,
 ) -> (StatusCode, Json<SimulateResponse>)
 where
-    T::AccountId: From<crate::primitives::AccountId> + Clone + sp_core::crypto::Ss58Codec + Send,
+    T::AccountId: Ss58Codec + Send + From<crate::primitives::AccountId>,
     T::TargetSnapshotPerBlock: Send,
     T::VoterSnapshotPerBlock: Send,
     T::Pages: Send,
     T::MaxVotesPerVoter: Send,
+    T::Solution: Send,
 {
     let block = match utils::parse_block(params.block) {
         Ok(block) => block,
@@ -56,8 +58,8 @@ where
         }
     };
     
-    let storage_client = state.storage_client.as_ref();
-    let multi_block_client = state.multi_block_storage_client.as_ref();
+    let raw_state_client = state.raw_state_client.as_ref();
+    let multi_block_client = state.multi_block_state_client.as_ref();
     let targets_count = body.count;
     let algorithm = body.algorithm.unwrap_or(Algorithm::SeqPhragmen);
     let iterations = body.iterations.unwrap_or(0);
@@ -67,7 +69,7 @@ where
     miner_config::set_balancing_iterations(iterations);
 
     let (status, response) = match simulate::simulate(
-        storage_client,
+        raw_state_client,
         multi_block_client,
         block,
         targets_count,

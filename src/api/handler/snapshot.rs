@@ -7,7 +7,7 @@ use tracing::info;
 use crate::{
     api::routes::root::{AppState},
     api::utils,
-    error::AppError,
+    api::error::AppError,
     snapshot,
 };
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
@@ -30,7 +30,7 @@ pub async fn snapshot_handler<T: MinerConfig + Send + Sync + Clone>(
     Query(params): Query<SnapshotRequest>,
 ) -> (StatusCode, Json<SnapshotResponse>)
 where
-    T::AccountId: Ss58Codec + Send,
+    T::AccountId: Ss58Codec + Send + From<crate::primitives::AccountId>,
     T::TargetSnapshotPerBlock: Send,
     T::VoterSnapshotPerBlock: Send,
     T::Pages: Send,
@@ -49,7 +49,7 @@ where
     info!("Block: {:?}", block);
 
     let build_result = snapshot::build(
-        &state.multi_block_storage_client, block).await;
+        &state.multi_block_state_client, &state.raw_state_client, block).await;
 
     let (status, response) = match build_result {
         Ok(result) => (

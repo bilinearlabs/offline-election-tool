@@ -7,7 +7,6 @@ pub type EraIndex = u32;
 pub type ChainClient = subxt::OnlineClient<subxt::PolkadotConfig>;
 /// Config used by the staking-miner
 pub type Config = subxt::PolkadotConfig;
-
+/// Storage from subxt client
 pub type Storage = subxt::storage::Storage<Config, ChainClient>;
-
 pub type Hash = subxt::utils::H256;

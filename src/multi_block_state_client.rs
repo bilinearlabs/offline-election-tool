@@ -4,7 +4,7 @@ use parity_scale_codec::{Decode, Encode};
 use parity_scale_codec as codec;
 use frame_support::BoundedVec;
 use frame_election_provider_support::Voter;
-use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
+use pallet_election_provider_multi_block::{AllVoterPagesOf, unsigned::miner::MinerConfig};
 use sp_core::Get;
 
 use crate::primitives::Hash;
@@ -14,7 +14,6 @@ use std::marker::PhantomData;
 // Trait for chain client operations to enable dependency injection for testing
 #[async_trait::async_trait]
 pub trait ChainClientTrait: Send + Sync {
-    fn chain_api(&self) -> &ChainClient;
     async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error>>;
     async fn fetch_constant<T: serde::de::DeserializeOwned>(
         &self,
@@ -26,10 +25,6 @@ pub trait ChainClientTrait: Send + Sync {
 // Implementation of ChainClientTrait for Client
 #[async_trait::async_trait]
 impl ChainClientTrait for Client {
-    fn chain_api(&self) -> &ChainClient {
-        self.chain_api()
-    }
-
     async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error>> {
         if let Some(block) = block {
             Ok(self.chain_api().storage().at(block))
@@ -110,7 +105,7 @@ pub type TargetSnapshotPage<MC: MinerConfig> =
 	BoundedVec<<MC as MinerConfig>::AccountId, <MC as MinerConfig>::TargetSnapshotPerBlock>;
 
 pub struct ElectionSnapshotPage<MC: MinerConfig> {
-	pub voters: Vec<VoterSnapshotPage<MC>>,
+	pub voters: AllVoterPagesOf<MC>,
 	pub targets: TargetSnapshotPage<MC>,
 }
 
@@ -138,13 +133,15 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         let desired_targets = self.get_desired_targets(&storage, round).await.unwrap_or(600);
 		let n_pages = MC::Pages::get();
 		let block_number = self.get_block_number(&storage).await?;
+		let block_hash = block;
         Ok(BlockDetails { 
 			storage, 
 			phase, 
 			n_pages, 
 			round, 
 			desired_targets, 
-			block_number 
+			block_number,
+			block_hash,
 		})
     }
 
@@ -183,11 +180,6 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
             .ok_or("Block number not found")?;
         let block_number: u32 = codec::Decode::decode(&mut block_number_entry.encoded())?;
         Ok(block_number)
-    }
-
-    pub async fn get_max_nominations(&self) -> Result<u32, Box<dyn std::error::Error>> {
-        // TODO not found in storage nor constants
-        Ok(16)
     }
 
     pub async fn get_min_nominator_bond(&self, storage: &Storage) -> Result<u128, Box<dyn std::error::Error>> {
@@ -257,4 +249,5 @@ pub struct BlockDetails {
 	pub round: u32,
 	pub desired_targets: u32,
 	pub block_number: u32,
+	pub block_hash: Option<Hash>,
 }

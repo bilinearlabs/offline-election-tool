@@ -5,21 +5,20 @@ use sp_core::crypto::set_default_ss58_version;
 use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
+use jsonrpsee_ws_client::WsClient;
 use crate::api::routes::root;
 use crate::models::{Chain, Algorithm};
-use crate::multi_block_storage_client::MultiBlockClient;
+use crate::multi_block_state_client::MultiBlockClient;
 use crate::subxt_client::Client;
 
-// mod network;
-mod storage_client;
+mod raw_state_client;
 mod primitives;
 mod snapshot;
 mod models;
 mod simulate;
 mod api;
-mod error;
 mod subxt_client;
-mod multi_block_storage_client;
+mod multi_block_state_client;
 mod miner_config;
 
 #[derive(Parser, Debug)]
@@ -123,9 +122,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_target(false)
         .init();
 
-    let client = storage_client::StorageClient::new(&args.rpc_endpoint).await?;
-
-    let runtime_version = client.get_runtime_version().await?;
+    let raw_client = raw_state_client::RawClient::new(&args.rpc_endpoint).await?;
+    let subxt_client = subxt_client::Client::new(&args.rpc_endpoint).await?;
+    
+    let runtime_version = raw_client.get_runtime_version().await?;
     let runtime_chain = match runtime_version.spec_name.to_string().as_str() {
         "polkadot" => Chain::Polkadot,
         "kusama" => Chain::Kusama,
@@ -134,14 +134,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "statemine" => Chain::Kusama,
         _ => return Err("Unsupported chain".into()),
     };
+    info!("Runtime version: {:?}", runtime_version);
     let chain = args.chain.unwrap_or(runtime_chain);
     set_default_ss58_version(chain.ss58_address_format());
 
-    let subxt_client = subxt_client::Client::new(&args.rpc_endpoint).await?;
-
-    // Fetch all miner constants from chain API
-    let miner_constants = miner_config::fetch_miner_constants(&subxt_client).await?;
-    info!("Fetched miner constants: pages={}, max_winners_per_page={}, max_backers_per_winner={}, voter_snapshot_per_block={}, target_snapshot_per_block={}, max_length={}, max_votes_per_voter={}",
+    // Fetch all constants from chain API
+    let miner_constants = miner_config::fetch_constants(&subxt_client).await?;
+    info!("Fetched constants: pages={}, max_winners_per_page={}, max_backers_per_winner={}, voter_snapshot_per_block={}, target_snapshot_per_block={}, max_length={}, max_votes_per_voter={}",
         miner_constants.pages,
         miner_constants.max_winners_per_page,
         miner_constants.max_backers_per_winner,
@@ -179,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let election_result = with_miner_config!(chain, {
                 let multi_block_client = MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone());
                 simulate::simulate::<_, Client, MinerConfig>(
-                    &client,
+                    &raw_client,
                     &multi_block_client,
                     block,
                     targets_count,
@@ -203,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("Taking snapshot...");
             let snapshot = with_miner_config!(chain, {
                 let multi_block_client = MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone());
-                snapshot::build::<Client, MinerConfig>(&multi_block_client, block).await
+                snapshot::build::<WsClient, Client, MinerConfig>(&multi_block_client, &raw_client, block).await
             });
             if snapshot.is_err() {
                 return Err(format!("Error generating snapshot -> {}", snapshot.err().unwrap()).into());
@@ -213,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Action::Server { address } => {
             info!("Starting server on {}", address);
-            let storage_client = Arc::new(client);
+            let storage_client = Arc::new(raw_client);
             let listener = tokio::net::TcpListener::bind(address).await?;
             with_miner_config!(chain, {
                 let multi_block_client = Arc::new(MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone()));

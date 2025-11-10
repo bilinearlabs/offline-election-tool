@@ -5,12 +5,6 @@ use jsonrpsee_ws_client::{WsClient, WsClientBuilder};
 use tracing::error;
 
 use parity_scale_codec::{Decode, Encode};
-use pallet_staking::{ActiveEraInfo, Exposure, ValidatorPrefs};
-use sp_staking::{PagedExposureMetadata, ExposurePage};
-use pallet_election_provider_multi_phase::{RoundSnapshot};
-use sp_npos_elections::{VoteWeight};
-use frame_support::{BoundedVec, pallet_prelude::ConstU32};
-
 use serde_json::to_value;
 
 use sp_core::{H256};
@@ -19,7 +13,7 @@ use sp_core::hashing::{twox_128};
 use frame_support::{Twox64Concat, Blake2_128Concat, StorageHasher};
 use sp_version::RuntimeVersion;
 
-use crate::primitives::{AccountId, Balance, EraIndex};
+use crate::primitives::{AccountId, EraIndex};
 
 
 #[derive(Debug, Clone, Decode, Encode)]
@@ -38,22 +32,14 @@ pub struct StakingLedger {
     #[codec(compact)]
     pub active: u128,
     pub unlocking: Vec<UnlockChunk<u128>>,
-    pub legacy_claimed_rewards: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Decode)]
 pub struct NominationsLight<AccountId> {
-    pub targets: BoundedVec<AccountId, ConstU32<16>>, // assumes max nominations 16
+    pub targets: Vec<AccountId>,
     pub submitted_in: EraIndex,
     pub suppressed: bool,
 }
-
-// Type alias for voter data in election snapshots
-// (voter_account, vote_weight, list_of_nominated_validators)
-pub type VoterData = (AccountId, VoteWeight, BoundedVec<AccountId, ConstU32<16>>);
-
-// Type alias for election snapshot
-pub type ElectionSnapshot = RoundSnapshot<AccountId, VoterData>;
 
 // Trait for jsonrpsee client operations to enable dependency injection for testing
 #[async_trait::async_trait]
@@ -77,22 +63,22 @@ impl RpcClient for WsClient {
 }
 
 #[derive(Clone)]
-pub struct StorageClient<C: RpcClient> {
+pub struct RawClient<C: RpcClient> {
     client: C,
 }
 
-impl StorageClient<WsClient> {
+impl RawClient<WsClient> {
     pub async fn new(node_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = WsClientBuilder::default()
             .max_response_size(20 * 1024 * 1024)     // 20MB
             .build(node_url)
             .await?;
-        Ok(StorageClient { client })
+        Ok(RawClient { client })
     }
 }
 
 #[allow(dead_code)]
-impl<C: RpcClient> StorageClient<C> {
+impl<C: RpcClient> RawClient<C> {
     fn module_prefix(&self, module: &[u8], storage: &[u8]) -> Vec<u8> {
         let module_hash = twox_128(module);
         let storage_hash = twox_128(storage);
@@ -165,99 +151,17 @@ impl<C: RpcClient> StorageClient<C> {
             }
         }
     }
+    
+    pub async fn get_runtime_version(&self) -> Result<RuntimeVersion, Box<dyn std::error::Error>> {
+        let data: Result<RuntimeVersion, ClientError>  = self.client
+            .rpc_request("state_getRuntimeVersion", (None::<()>,))
+            .await;
 
-    // pub async fn get_total_issuance_at(&self, at: Option<H256>) -> Result<u128, Box<dyn std::error::Error>> {
-    //     let key = self.value_key(b"Balances", b"TotalIssuance");
-    //     let result = self.read::<Balance>(key, at).await?;
-    //     Ok(result.unwrap_or(0))
-    // }
-
-    // Get the overview metadata for a validator at a specific era (contains page_count)
-    pub async fn get_validator_overview(&self, era: EraIndex, validator: AccountId, at: Option<H256>) -> Result<Option<PagedExposureMetadata<Balance>>, Box<dyn std::error::Error>> {
-        let overview_key = self.double_map_key(
-            b"Staking",
-            b"ErasStakersOverview", 
-            &era.encode(),
-            &validator.encode(),
-        );
-        self.read::<PagedExposureMetadata<Balance>>(overview_key, at).await
-    }
-
-    // Get exposure data for a specific page of a validator's exposure
-    pub async fn get_validator_exposure_page(&self, era: EraIndex, validator: AccountId, page: u32, at: Option<H256>) -> Result<Option<ExposurePage<AccountId, Balance>>, Box<dyn std::error::Error>> {
-        let exposure_key = self.triple_map_key(
-            b"Staking",
-            b"ErasStakersPaged", 
-            &era.encode(),
-            &validator.encode(),
-            &page.encode(),
-        );
-        self.read::<ExposurePage<AccountId, Balance>>(exposure_key, at).await
-    }
-
-    // Get complete exposure data for a validator by reading all pages
-    pub async fn get_complete_validator_exposure(&self, era: EraIndex, validator: AccountId, at: Option<H256>) -> Result<Option<Exposure<AccountId, Balance>>, Box<dyn std::error::Error>> { 
-        // First get the overview to know how many pages exist
-        let overview = match self.get_validator_overview(era, validator.clone(), at).await? {
-            Some(overview) => overview,
-            None => return Ok(None),
-        };
-
-        let page_count = overview.page_count;
-        if page_count == 0 {
-            return Ok(None);
+        if data.is_err() {
+            return Err("Error getting runtime version".into());
         }
-
-        // Read all pages and combine them
-        let mut all_nominators = Vec::new();
-
-        for page in 0..page_count {
-            if let Some(exposure_page) = self.get_validator_exposure_page(era, validator.clone(), page, at).await? {
-                all_nominators.extend(exposure_page.others.into_iter());
-            }
-        }
-
-        Ok(Some(Exposure {
-            total: overview.total,
-            own: overview.own,
-            others: all_nominators,
-        }))
-    }
-
-    pub async fn get_active_era(&self, at: Option<H256>) -> Result<Option<ActiveEraInfo>, Box<dyn std::error::Error>> {
-        let active_era_key = self.value_key(b"Staking", b"ActiveEra");
-        self.read::<ActiveEraInfo>(active_era_key, at).await
-    }
-
-    // Get complete exposure data for all validators in an era
-    pub async fn get_all_validators_complete_exposure(&self, at: Option<H256>) -> Result<(EraIndex, Vec<(AccountId, Exposure<AccountId, Balance>)>), Box<dyn std::error::Error>> {
-        let validators_key = self.value_key(b"Session", b"Validators");
-        let validators = self.read::<Vec<AccountId>>(validators_key, at).await?
-            .ok_or("Validators not found")?;
-
-        let active_era = self.get_active_era(at).await?
-            .ok_or("Active era not found")?;
-        let era = active_era.index;
-
-        let mut validators_and_expo = vec![];
-
-        for validator in validators {
-            if let Some(complete_exposure) = self.get_complete_validator_exposure(era, validator.clone(), at).await? {
-                validators_and_expo.push((validator, complete_exposure));
-            }
-        }
-
-        Ok((era, validators_and_expo))
-    }
-
-    // Get validator preferences (commission and blocked status) for a specific validator
-    pub async fn get_validator_prefs(&self, validator: AccountId, at: Option<H256>) -> Result<Option<ValidatorPrefs>, Box<dyn std::error::Error>> {
-        let validators_key = self.map_key::<Twox64Concat>(
-            b"Staking",
-            b"Validators",
-            &validator.encode(),
-        );
-        self.read::<ValidatorPrefs>(validators_key, at).await
+        let data = data.unwrap();
+        Ok(data)
     }
 
     pub async fn get_nominator(&self, nominator: AccountId, at: Option<H256>) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error>> {
@@ -286,67 +190,8 @@ impl<C: RpcClient> StorageClient<C> {
         self.read::<StakingLedger>(key, at).await
     }
 
-    // Only when snapshot is present
-    pub async fn get_snapshot(&self, at: Option<H256>) -> Result<Option<ElectionSnapshot>, Box<dyn std::error::Error>> {
-        let snapshot_key = self.value_key(b"ElectionProviderMultiPhase", b"Snapshot");
-        self.read::<ElectionSnapshot>(snapshot_key, at).await
-    }
 
-    // Check the current election phase
-    pub async fn get_election_phase(&self, at: Option<H256>) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        let phase_key = self.value_key(b"ElectionProviderMultiPhase", b"CurrentPhase");
-        let phase = self.read::<u8>(phase_key, at).await?;
-        
-        let phase_name = match phase {
-            Some(0) => "Off",
-            Some(1) => "Signed",
-            Some(2) => "Unsigned",
-            Some(3) => "Emergency",
-            _ => "Unknown",
-        };
-        
-        Ok(Some(phase_name.to_string()))
-    }
-
-    // Only when snapshot is present
-    pub async fn get_desired_targets(&self, at: Option<H256>) -> Result<Option<u32>, Box<dyn std::error::Error>> {
-        let desired_targets = self.read::<u32>(self.value_key(b"ElectionProviderMultiPhase", b"DesiredTargets"), at).await?;
-        Ok(desired_targets)
-    }
-
-    pub async fn get_validator_count(&self, at: Option<H256>) -> Result<u32, Box<dyn std::error::Error>> {
-        let validator_count = self.read::<u32>(self.value_key(b"Staking", b"ValidatorCount"), at).await?;
-        Ok(validator_count.unwrap_or(0))
-    }
-
-    pub async fn get_max_nominations(&self, _at: Option<H256>) -> Result<u32, Box<dyn std::error::Error>> {
-        // TODO not found in storage
-        return Ok(16);
-    }
-
-    pub async fn get_min_nominator_bond(&self, at: Option<H256>) -> Result<Option<u128>, Box<dyn std::error::Error>> {
-        let min_nominator_bond = self.read::<u128>(self.value_key(b"Staking", b"MinNominatorBond"), at).await?;
-        Ok(min_nominator_bond)
-    }
-
-    pub async fn get_min_validator_bond(&self, at: Option<H256>) -> Result<Option<u128>, Box<dyn std::error::Error>> {
-        let min_validator_bond = self.read::<u128>(self.value_key(b"Staking", b"MinValidatorBond"), at).await?;
-        Ok(min_validator_bond)
-    }
-
-    pub async fn get_runtime_version(&self) -> Result<RuntimeVersion, Box<dyn std::error::Error>> {
-        let data: Result<RuntimeVersion, ClientError>  = self.client
-            .rpc_request("state_getRuntimeVersion", (None::<()>,))
-            .await;
-
-        if data.is_err() {
-            return Err("Error getting runtime version".into());
-        }
-        let data = data.unwrap();
-        Ok(data)
-    }
-
-    // Try to get all targets when no snapshot
+    // Get all targets when no snapshot
     // Get paged keys
     pub async fn get_keys_paged(&self, prefix: StorageKey, count: u32, start_key: Option<StorageKey>, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>> {
         let serialized_prefix = to_value(prefix).expect("StorageKey serialization infallible");
@@ -448,7 +293,7 @@ mod tests {
     #[tokio::test]
     async fn test_module_prefix() {
         let mock_client = MockRpcClient::new();
-        let client = StorageClient { client: mock_client };
+        let client = RawClient { client: mock_client };
         let result = client.module_prefix(b"TestModule", b"TestStorage");
         let prefix = "69667818617339ad409c359884450f004348b9f44e633139d8a8187f4eead460";
         let prefix_bytes = hex::decode(prefix);
@@ -458,7 +303,7 @@ mod tests {
     #[tokio::test]
     async fn test_value_key() {
         let mock_client = MockRpcClient::new();
-        let client = StorageClient { client: mock_client };
+        let client = RawClient { client: mock_client };
         let result = client.value_key(b"TestModule", b"TestStorage");
             
         let value_key = "69667818617339ad409c359884450f004348b9f44e633139d8a8187f4eead460";
@@ -469,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn test_map_key() {
         let mock_client = MockRpcClient::new();
-        let client = StorageClient { client: mock_client };
+        let client = RawClient { client: mock_client };
         let account_id = create_test_account_id();
         let key = client.map_key::<Twox64Concat>(b"TestModule", b"TestStorage", &account_id.encode());
         
@@ -486,7 +331,7 @@ mod tests {
     #[tokio::test]
     async fn test_double_map_key() {
         let mock_client = MockRpcClient::new();
-        let client = StorageClient { client: mock_client };
+        let client = RawClient { client: mock_client };
         let account_id = create_test_account_id();
         let key = client.double_map_key(b"TestModule", b"TestStorage", &account_id.encode(), &account_id.encode());
         
@@ -503,7 +348,7 @@ mod tests {
     #[tokio::test]
     async fn test_triple_map_key() {
         let mock_client = MockRpcClient::new();
-        let client = StorageClient { client: mock_client };
+        let client = RawClient { client: mock_client };
         let account_id = create_test_account_id();
         let key = client.triple_map_key(b"TestModule", b"TestStorage", &account_id.encode(), &account_id.encode(), &account_id.encode());
         
@@ -534,7 +379,7 @@ mod tests {
             .times(1)
             .returning(move |_, _| Ok(Some(StorageData(test_data_for_mock.encode()))));
 
-        let client = StorageClient { client: mock_client };
+        let client = RawClient { client: mock_client };
         
         let result = client.read::<Vec<u8>>(key, None).await;
 
@@ -555,7 +400,7 @@ mod tests {
             .times(1)
             .returning(move |_: &str, _: (serde_json::Value, serde_json::Value)| Ok(Some(StorageData(ValidatorPrefs { commission: Perbill::from_percent(10), blocked: false }.encode()))));
         
-        let client = StorageClient { client: mock_client };
+        let client = RawClient { client: mock_client };
         let result = client.get_validator_prefs(account_id, None).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Some(ValidatorPrefs { commission: Perbill::from_percent(10), blocked: false }));
@@ -574,7 +419,7 @@ mod tests {
             .with(eq("state_getStorage"), mockall::predicate::always())
             .times(1)
             .returning(move |_: &str, _: (serde_json::Value, serde_json::Value)| Ok(Some(StorageData(snapshot_repsonse_for_mock.encode()))));
-        let client = StorageClient { client: mock_client };
+        let client = RawClient { client: mock_client };
         let result = client.get_snapshot(None).await;
 
         assert!(result.is_ok());

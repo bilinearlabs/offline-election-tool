@@ -1,8 +1,6 @@
 use crate::primitives::{ChainClient};
 use std::{time::Duration};
-use subxt::backend::{
-	rpc::reconnecting_rpc_client::{ExponentialBackoff, RpcClient as ReconnectingRpcClient},
-};
+use subxt::{backend::rpc::reconnecting_rpc_client::{ExponentialBackoff, RpcClient as ReconnectingRpcClient}, client::RuntimeVersion};
 use subxt::ext::scale_value;
 
 #[derive(Clone, Debug)]

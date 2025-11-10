@@ -1,5 +1,5 @@
 use crate::{
-	multi_block_storage_client::ChainClientTrait,
+	multi_block_state_client::ChainClientTrait,
 	primitives::{AccountId, Hash},
 };
 use frame_support::pallet_prelude::ConstU32;
@@ -20,8 +20,8 @@ pub struct MinerConstants {
 	pub max_votes_per_voter: u32,
 }
 
-/// Helper function to fetch miner constants from chain API
-pub async fn fetch_miner_constants<C: ChainClientTrait>(
+/// Helper function to fetch constants from chain API
+pub async fn fetch_constants<C: ChainClientTrait>(
 	client: &C,
 ) -> Result<MinerConstants, Box<dyn std::error::Error>> {
 	let pages = client
