@@ -27,10 +27,6 @@ pub struct SimulateArgs {
     #[arg(short, long, default_value = "latest")]
     pub block: String,
 
-    /// Count of validators to elect (optional, uses chain default if not specified)
-    #[arg(short, long)]
-    pub count: Option<usize>,
-
     /// Election algorithm to use (seq-phragmen or phragmms)
     #[arg(short, long, default_value = "seq-phragmen")]
     pub algorithm: Algorithm,
@@ -42,6 +38,22 @@ pub struct SimulateArgs {
     /// Apply reduce algorithm to output assignments
     #[arg(long)]
     pub reduce: bool,
+
+    /// Desired number of validators to elect (optional, uses chain default if not specified)
+    #[arg(long)]
+    pub desired_validators: Option<u32>,
+
+    /// Maximum nominations per voter (optional, uses chain default if not specified)
+    #[arg(long)]
+    pub max_nominations: Option<u32>,
+
+    /// Minimum nominator bond (optional, uses chain default if not specified)
+    #[arg(long)]
+    pub min_nominator_bond: Option<u128>,
+
+    /// Minimum validator bond (optional, uses chain default if not specified)
+    #[arg(long)]
+    pub min_validator_bond: Option<u128>,
 
     /// Output file path (if not specified, prints to stdout)
     #[arg(short, long)]
@@ -153,11 +165,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set runtime constants
     miner_config::set_runtime_constants(miner_constants.clone());
     
-    // Set balancing iterations from args if simulating
-    if let Action::Simulate(ref simulate_args) = args.action {
-        miner_config::set_balancing_iterations(simulate_args.iterations);
-    }
-
     match args.action {
         Action::Simulate(simulate_args) => {
             let block: Option<H256> = if simulate_args.block == "latest" {
@@ -168,12 +175,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let output = simulate_args.output.clone();
             info!("Running election simulation with {:?} algorithm...", simulate_args.algorithm);
-            let targets_count = simulate_args.count;
+            let desired_validators = simulate_args.desired_validators;
             let algorithm = simulate_args.algorithm;
             let iterations = simulate_args.iterations;
-            miner_config::set_balancing_iterations(iterations);
+            let max_nominations = simulate_args.max_nominations;
+            miner_config::set_election_config(algorithm, iterations, max_nominations);
             let apply_reduce = simulate_args.reduce;
-            let manual_override = simulate_args.manual_override.clone();
+            let manual_override = if let Some(path) = simulate_args.manual_override.clone() {
+                let file = std::fs::read(&path)
+                    .map_err(|e| format!("Failed to read manual override file '{}': {}", path, e))?;
+                let override_data: simulate::Override = serde_json::from_slice(&file)
+                    .map_err(|e| format!("Failed to parse manual override JSON: {}", e))?;
+                Some(override_data)
+            } else {
+                None
+            };
+            let min_nominator_bond = simulate_args.min_nominator_bond;
+            let min_validator_bond = simulate_args.min_validator_bond;
             
             let election_result = with_miner_config!(chain, {
                 let multi_block_client = MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone());
@@ -181,10 +199,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &raw_client,
                     &multi_block_client,
                     block,
-                    targets_count,
-                    algorithm,
+                    desired_validators,
                     apply_reduce,
                     manual_override,
+                    min_nominator_bond,
+                    min_validator_bond,
                 ).await
             });
             if election_result.is_err() {  

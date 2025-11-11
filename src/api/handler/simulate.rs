@@ -9,7 +9,7 @@ use crate::{
     api::utils,
     api::error::AppError,
     models::Algorithm,
-    simulate,
+    simulate::{self, Override},
     miner_config,
 };
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
@@ -21,10 +21,14 @@ pub struct SimulateRequestQuery {
 
 #[derive(Deserialize)]
 pub struct SimulateRequestBody {
-    pub count: Option<usize>,
     pub algorithm: Option<Algorithm>,
     pub iterations: Option<usize>,
     pub reduce: Option<bool>,
+    pub desired_validators: Option<u32>,
+    pub max_nominations: Option<u32>,
+    pub min_nominator_bond: Option<u128>,
+    pub min_validator_bond: Option<u128>,
+    pub manual_override: Option<Override>,
 }
 
 #[derive(Serialize)]
@@ -60,23 +64,31 @@ where
     
     let raw_state_client = state.raw_state_client.as_ref();
     let multi_block_client = state.multi_block_state_client.as_ref();
-    let targets_count = body.count;
     let algorithm = body.algorithm.unwrap_or(Algorithm::SeqPhragmen);
     let iterations = body.iterations.unwrap_or(0);
+    let desired_validators = body.desired_validators;
+    let max_nominations = body.max_nominations;
     let apply_reduce = body.reduce.unwrap_or(false);
+    let min_nominator_bond = body.min_nominator_bond;
+    let min_validator_bond = body.min_validator_bond;
+    let manual_override = body.manual_override;
     
-    // Set balancing iterations from request
-    miner_config::set_balancing_iterations(iterations);
+    // Run simulation within task-local scope for algorithm, iterations, and max nominations
+    // This ensures each concurrent request gets its own isolated value
+    let result = miner_config::with_election_config(algorithm, iterations, max_nominations, async {
+        simulate::simulate(
+            raw_state_client,
+            multi_block_client,
+            block,
+            desired_validators,
+            apply_reduce,
+            manual_override,
+            min_nominator_bond,
+            min_validator_bond,
+        ).await
+    }).await;
 
-    let (status, response) = match simulate::simulate(
-        raw_state_client,
-        multi_block_client,
-        block,
-        targets_count,
-        algorithm,
-        apply_reduce,
-        None,
-    ).await {
+    let (status, response) = match result {
         Ok(result) => (
             StatusCode::OK,
             SimulateResponse {

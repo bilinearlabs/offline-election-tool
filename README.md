@@ -25,10 +25,13 @@ offline-election-tool [OPTIONS] --rpc-endpoint <RPC_ENDPOINT> <COMMAND>
 ### Simulate Command Options
 
 - `-b, --block <BLOCK>` - Block hash for snapshot (default: "latest" for latest block)
-- `-c, --count <COUNT>` - Count of validators to elect (optional, uses chain default if not specified)
 - `-a, --algorithm <ALGORITHM>` - Election algorithm to use: `seq-phragmen` (default) or `phragmms`
 - `-i, --iterations <ITERATIONS>` - Number of iterations for the balancing algorithm (default: 0)
 - `--reduce` - Apply reduce algorithm to minimize output assignments
+- `--desired-validators <COUNT>` - Desired number of validators to elect (optional, uses chain default if not specified)
+- `--max-nominations <COUNT>` - Maximum nominations per voter (optional, uses chain default if not specified)
+- `--min-nominator-bond <AMOUNT>` - Minimum nominator bond (optional, uses chain default if not specified)
+- `--min-validator-bond <AMOUNT>` - Minimum validator bond (optional, uses chain default if not specified)
 - `-o, --output <FILE>` - Write JSON output to file (optional, prints to stdout if not specified)
 - `-m, --manual-override <FILE>` - Path to JSON file for manual override of voters and candidates
 
@@ -47,33 +50,33 @@ offline-election-tool [OPTIONS] --rpc-endpoint <RPC_ENDPOINT> <COMMAND>
 
 #### Retrieve snapshot for latest block:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io snapshot
+cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot snapshot
 ```
 *Note: If the block contains an election snapshot, it will be retrieved. Otherwise, a snapshot will be generated from current staking data.*
 
 #### Simulate election for latest block:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io simulate
+cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate
 ```
 
 #### Simulate election for specific block:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io simulate --block 0xc9b9a5d6efa7c36e9501b53a4ebdf77def3e7560d2520254ed1a5bb6035acae4
+cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --block 0xc9b9a5d6efa7c36e9501b53a4ebdf77def3e7560d2520254ed1a5bb6035acae4
 ```
 
 #### Simulate with PhragMMS algorithm:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io simulate --algorithm phragmms
+cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --algorithm phragmms
 ```
 
 #### Simulate with balancing iterations and reduce:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io simulate --iterations 10 --reduce
+cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --iterations 10 --reduce
 ```
 
 #### Simulate with manual override:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io simulate --manual-override override.json
+cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --manual-override override.json
 ```
 
 Manual override JSON file format:
@@ -96,18 +99,18 @@ The manual override feature allows you to:
 
 #### Save output to files:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io --output simulate_output.json simulate
-cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io --output snapshot.json snapshot
+cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --output simulate_output.json
+cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot snapshot --output snapshot.json
 ```
 
 #### Start REST API server:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io server
+cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot server
 ```
 
 Start server on custom address:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://rpc.polkadot.io server --address 0.0.0.0:8080
+cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot server --address 0.0.0.0:8080
 ```
 
 ## REST API Endpoints
@@ -124,17 +127,30 @@ Simulate an election with specified parameters.
 **Request Body (JSON):**
 ```json
 {
-  "count": 297,
+  "desired_validators": 297,
   "algorithm": "seq-phragmen",
   "iterations": 10,
-  "reduce": true
+  "reduce": true,
+  "max_nominations": 16,
+  "min_nominator_bond": 1000000000,
+  "min_validator_bond": 1000000000,
+  "manual_override": {
+    "candidates": [],
+    "candidates_remove": [],
+    "voters": [],
+    "voters_remove": []
+  }
 }
 ```
 
-- `count` (optional) - Number of validators to elect (uses chain default if not specified)
+- `desired_validators` (optional) - Desired number of validators to elect (uses chain default if not specified)
 - `algorithm` (optional) - Election algorithm: `"seq-phragmen"` or `"phragmms"` (default: `"seq-phragmen"`)
 - `iterations` (optional) - Number of balancing iterations (default: 0)
 - `reduce` (optional) - Apply reduce algorithm to minimize assignments (default: false)
+- `max_nominations` (optional) - Maximum nominations per voter (uses chain default if not specified)
+- `min_nominator_bond` (optional) - Minimum nominator bond (uses chain default if not specified)
+- `min_validator_bond` (optional) - Minimum validator bond (uses chain default if not specified)
+- `manual_override` (optional) - Manual override object for voters and candidates (same format as CLI manual override file)
 
 **Success Response (200 OK):**
 ```json

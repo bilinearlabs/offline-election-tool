@@ -104,7 +104,7 @@ where
     let nominators_mc: Vec<<MC as MinerConfig>::AccountId> = nominators.into_iter().map(|v| v.into()).collect();
 
     // Prepare data for ElectionSnapshotPage
-    let min_bond = staking_config.min_nominator_bond;
+    let min_nominator_bond = staking_config.min_nominator_bond;
 
     let nominator_futures: Vec<_> = nominators_mc.into_iter().map(|nominator| {
         let storage = &block_details.storage;
@@ -124,13 +124,17 @@ where
             let controller = controller.unwrap();
             let stake = client.ledger(storage, controller).await
                 .map_err(|e| e.to_string())?
-                .filter(|s| s.active >= min_bond);
+                .filter(|s| s.active >= min_nominator_bond);
             let stake = match stake {
                 Some(s) => s,
                 None => return Ok(None),
             };
+            // Trim targets to max nominations per voter
+            let max_nominations = MC::MaxVotesPerVoter::get();
+            let mut targets = nominations.targets.clone();
+            targets.truncate(max_nominations as usize);
             let targets_mc = BoundedVec::try_from(
-                nominations.targets.into_iter().map(|t| t.into()).collect::<Vec<_>>()
+                targets.into_iter().map(|t| t.into()).collect::<Vec<_>>()
             ).map_err(|_| "Too many targets in voter".to_string())?;
             Ok(Some((nominator, stake.active as u64, targets_mc)))
         }

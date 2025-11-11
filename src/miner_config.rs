@@ -1,10 +1,9 @@
 use crate::{
-	multi_block_state_client::ChainClientTrait,
-	primitives::{AccountId, Hash},
+	models::Algorithm, multi_block_state_client::ChainClientTrait, primitives::{AccountId, Hash}
 };
 use frame_support::pallet_prelude::ConstU32;
 use pallet_election_provider_multi_block as multi_block;
-use frame_election_provider_support::{self, SequentialPhragmen};
+use frame_election_provider_support::{self, SequentialPhragmen, PhragMMS};
 use sp_runtime::{PerU16, Percent, Perbill};
 use sp_npos_elections;
 
@@ -65,28 +64,62 @@ pub async fn fetch_constants<C: ChainClientTrait>(
 
 // Runtime configuration holder - stores values fetched from chain
 use std::sync::{OnceLock, Mutex};
+use tokio::task_local;
 
 static RUNTIME_CONFIG: OnceLock<MinerConstants> = OnceLock::new();
-static BALANCING_ITERATIONS: Mutex<usize> = Mutex::new(0);
+
+// Task-local storage for balancing iterations (each async task gets its own value)
+// This prevents race conditions when multiple requests run concurrently
+#[derive(Debug, Clone)]
+struct ElectionConfig {
+	algorithm: Algorithm,
+	iterations: usize,
+	max_votes_per_voter: Option<u32>,
+}
+task_local! {
+	static ELECTION_CONFIG: ElectionConfig;
+}
+
+// Global fallback for CLI usage (single-threaded, no concurrency issues)
+static ELECTION_CONFIG_FALLBACK: Mutex<ElectionConfig> = Mutex::new(ElectionConfig {
+	algorithm: Algorithm::SeqPhragmen,
+	iterations: 0,
+	max_votes_per_voter: None,
+});
 
 /// Set the runtime miner constants (should be called once at startup)
 pub fn set_runtime_constants(constants: MinerConstants) {
 	RUNTIME_CONFIG.set(constants).expect("Runtime constants already set");
 }
 
-/// Set balancing iterations from args
-pub fn set_balancing_iterations(iterations: usize) {
-	*BALANCING_ITERATIONS.lock().unwrap() = iterations;
+/// Set election algorithm, balancing iterations, and max nominations from args
+/// 
+/// Note: For concurrent API requests, use `with_election_config` instead
+/// to ensure each request gets its own isolated value.
+/// This function sets a global fallback value, which works for CLI usage.
+pub fn set_election_config(algorithm: Algorithm, iterations: usize, max_votes_per_voter: Option<u32>) {
+	*ELECTION_CONFIG_FALLBACK.lock().unwrap() = ElectionConfig {
+		algorithm,
+		iterations,
+		max_votes_per_voter,
+	};
+}
+
+/// Run a future with a specific algorithm, balancing iterations, and max votes per voter set for this task.
+pub async fn with_election_config<F, R>(algorithm: Algorithm, iterations: usize, max_votes_per_voter: Option<u32>, f: F) -> R
+where
+	F: std::future::Future<Output = R>,
+{
+	ELECTION_CONFIG.scope(ElectionConfig {
+		algorithm,
+		iterations,
+		max_votes_per_voter,
+	}, f).await
 }
 
 /// Get the runtime miner constants
 pub fn get_runtime_constants() -> &'static MinerConstants {
 	RUNTIME_CONFIG.get().expect("Runtime constants not set - call set_runtime_constants first")
-}
-
-/// Get balancing iterations
-pub fn get_balancing_iterations() -> usize {
-	*BALANCING_ITERATIONS.lock().unwrap()
 }
 
 // Simple type aliases for constants 
@@ -97,6 +130,17 @@ pub struct VoterSnapshotPerBlock;
 pub struct TargetSnapshotPerBlock;
 pub struct MaxLength;
 pub struct BalancingIterations;
+pub struct MaxVotesPerVoter;
+
+// Dynamic solver wrapper that dispatches to the correct algorithm at runtime
+#[derive(Clone, Debug)]
+pub struct DynamicSolver;
+
+// Helper to get current algorithm from task-local or fallback
+fn get_current_algorithm() -> Algorithm {
+	ELECTION_CONFIG.try_with(|v| v.algorithm)
+		.unwrap_or_else(|_| ELECTION_CONFIG_FALLBACK.lock().unwrap().algorithm)
+}
 
 // Implement Get for constants
 impl sp_core::Get<u32> for Pages {
@@ -135,13 +179,72 @@ impl sp_core::Get<u32> for MaxLength {
 	}
 }
 
+impl sp_core::Get<u32> for MaxVotesPerVoter {
+	fn get() -> u32 {
+		// Try task-local first (for API requests), fall back to global (for CLI)
+		// If not set in request, use the chain constant
+		ELECTION_CONFIG.try_with(|v| v.max_votes_per_voter)
+			.unwrap_or_else(|_| ELECTION_CONFIG_FALLBACK.lock().unwrap().max_votes_per_voter)
+			.unwrap_or_else(|| get_runtime_constants().max_votes_per_voter)
+	}
+}
+
 impl sp_core::Get<Option<sp_npos_elections::BalancingConfig>> for BalancingIterations {
 	fn get() -> Option<sp_npos_elections::BalancingConfig> {
-		let iterations = *BALANCING_ITERATIONS.lock().unwrap();
+		// Try task-local first (for API requests), fall back to global (for CLI)
+		// This ensures each concurrent request gets its own value
+		let iterations = ELECTION_CONFIG.try_with(|v| v.iterations)
+			.unwrap_or_else(|_| ELECTION_CONFIG_FALLBACK.lock().unwrap().iterations);
 		if iterations > 0 {
 			Some(sp_npos_elections::BalancingConfig { iterations, tolerance: 0 })
 		} else {
 			None
+		}
+	}
+}
+
+// Implement NposSolver trait for DynamicSolver
+// This allows it to dispatch to SequentialPhragmen or PhragMMS at runtime
+impl frame_election_provider_support::NposSolver for DynamicSolver {
+	type AccountId = AccountId;
+	type Accuracy = Perbill;
+	type Error = sp_npos_elections::Error;
+
+	fn solve(
+		to_elect: usize,
+		targets: Vec<Self::AccountId>,
+		voters: Vec<(
+			Self::AccountId,
+			frame_election_provider_support::VoteWeight,
+			impl Clone + IntoIterator<Item = Self::AccountId>,
+		)>,
+	) -> Result<frame_election_provider_support::ElectionResult<Self::AccountId, Self::Accuracy>, Self::Error> {
+		match get_current_algorithm() {
+			Algorithm::SeqPhragmen => {
+				SequentialPhragmen::<AccountId, Perbill, BalancingIterations>::solve(
+					to_elect,
+					targets,
+					voters,
+				)
+			}
+			Algorithm::Phragmms => {
+				PhragMMS::<AccountId, Perbill, BalancingIterations>::solve(
+					to_elect,
+					targets,
+					voters,
+				)
+			}
+		}
+	}
+
+	fn weight<T: frame_election_provider_support::WeightInfo>(voters: u32, targets: u32, vote_degree: u32) -> frame_election_provider_support::Weight {
+		match get_current_algorithm() {
+			Algorithm::SeqPhragmen => {
+				SequentialPhragmen::<AccountId, Perbill, BalancingIterations>::weight::<T>(voters, targets, vote_degree)
+			}
+			Algorithm::Phragmms => {
+				PhragMMS::<AccountId, Perbill, BalancingIterations>::weight::<T>(voters, targets, vote_degree)
+			}
 		}
 	}
 }
@@ -165,9 +268,9 @@ pub mod polkadot {
 	impl multi_block::unsigned::miner::MinerConfig for MinerConfig {
 		type AccountId = AccountId;
 		type Solution = NposSolution16;
-		type Solver = SequentialPhragmen<AccountId, Perbill, BalancingIterations>;
+		type Solver = DynamicSolver;
 		type Pages = Pages;
-		type MaxVotesPerVoter = ConstU32<16>;
+		type MaxVotesPerVoter = MaxVotesPerVoter;
 		type MaxWinnersPerPage = MaxWinnersPerPage;
 		type MaxBackersPerWinner = MaxBackersPerWinner;
 		type MaxBackersPerWinnerFinal = ConstU32<{ u32::MAX }>;
@@ -199,7 +302,7 @@ pub mod kusama {
 		type Solution = NposSolution24;
 		type Solver = SequentialPhragmen<AccountId, Perbill, BalancingIterations>;
 		type Pages = Pages;
-		type MaxVotesPerVoter = ConstU32<24>;
+		type MaxVotesPerVoter = MaxVotesPerVoter;
 		type MaxWinnersPerPage = MaxWinnersPerPage;
 		type MaxBackersPerWinner = MaxBackersPerWinner;
 		type MaxBackersPerWinnerFinal = ConstU32<{ u32::MAX }>;
@@ -231,7 +334,7 @@ pub mod substrate {
         type Solution = NposSolution16;
         type Solver = SequentialPhragmen<AccountId, Perbill, BalancingIterations>;
         type Pages = Pages;
-        type MaxVotesPerVoter = ConstU32<16>;
+        type MaxVotesPerVoter = MaxVotesPerVoter;
         type MaxWinnersPerPage = MaxWinnersPerPage;
         type MaxBackersPerWinner = MaxBackersPerWinner;
         type MaxBackersPerWinnerFinal = ConstU32<{ u32::MAX }>;
