@@ -1,19 +1,18 @@
 use std::sync::Arc;
-use crate::{models::Chain, multi_block_state_client::MultiBlockClient, primitives::AccountId, raw_state_client::{self, RawClient}, subxt_client::Client};
+use crate::{models::Chain, multi_block_state_client::MultiBlockClient, primitives::AccountId, raw_state_client::{RawClient}, subxt_client::Client};
 use jsonrpsee_ws_client::WsClient;
 use axum::{
     Router,
     routing::{IntoMakeService, get, post},
 };
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
-use sp_core::crypto::Ss58Codec;
 use tower_http::trace::TraceLayer;
 
 use crate::api::handler::{simulate, snapshot};
 
 pub struct AppState<T: MinerConfig + Send + Sync + Clone> 
 where
-    <T as MinerConfig>::AccountId: Ss58Codec + Send,
+    T: MinerConfig<AccountId = AccountId> + Send,
     <T as MinerConfig>::TargetSnapshotPerBlock: Send,
     <T as MinerConfig>::VoterSnapshotPerBlock: Send,
     <T as MinerConfig>::Pages: Send,
@@ -26,7 +25,7 @@ where
 
 impl<T: MinerConfig + Send + Sync + Clone> Clone for AppState<T>
 where
-    <T as MinerConfig>::AccountId: Ss58Codec + Send,
+    T: MinerConfig<AccountId = AccountId> + Send,
     <T as MinerConfig>::TargetSnapshotPerBlock: Send,
     <T as MinerConfig>::VoterSnapshotPerBlock: Send,
     <T as MinerConfig>::Pages: Send,
@@ -43,7 +42,7 @@ where
 
 pub fn routes<T: MinerConfig + Send + Sync + Clone + 'static>(raw_state_client: Arc<RawClient<WsClient>>, multi_block_state_client: Arc<MultiBlockClient<Client, T>>, chain: Chain) -> IntoMakeService<Router>
 where
-    T::AccountId: From<AccountId> + Clone + Ss58Codec + Send + 'static,
+    T: MinerConfig<AccountId = AccountId> + Send,
     T::TargetSnapshotPerBlock: Send + 'static,
     T::VoterSnapshotPerBlock: Send + 'static,
     T::Pages: Send + 'static,

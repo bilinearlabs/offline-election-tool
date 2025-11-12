@@ -1,10 +1,12 @@
 use crate::{
-	models::Algorithm, multi_block_state_client::ChainClientTrait, primitives::{AccountId, Hash}
+	models::Algorithm, multi_block_state_client::ChainClientTrait, primitives::{AccountId, Hash}, Chain
 };
 use frame_support::pallet_prelude::ConstU32;
 use pallet_election_provider_multi_block as multi_block;
 use frame_election_provider_support::{self, SequentialPhragmen, PhragMMS};
 use sp_runtime::{PerU16, Percent, Perbill};
+use serde::Deserialize;
+use parity_scale_codec::{Decode};
 use sp_npos_elections;
 
 /// Constants fetched from chain
@@ -16,7 +18,28 @@ pub struct MinerConstants {
 	pub voter_snapshot_per_block: u32,
 	pub target_snapshot_per_block: u32,
 	pub max_length: u32,
-	pub max_votes_per_voter: u32,
+}
+
+#[derive(Decode, Deserialize, Debug)]
+pub struct BlockLength {
+	pub max: PerDispatchClass,
+}
+
+impl BlockLength {
+	pub fn total(&self) -> u32 {
+		let mut total = 0_u32;
+		total = total.saturating_add(self.max.normal);
+		total = total.saturating_add(self.max.operational);
+		total = total.saturating_add(self.max.mandatory);
+		total
+	}
+}
+
+#[derive(Decode, Deserialize, Debug)]
+pub struct PerDispatchClass {
+	pub normal: u32,
+	pub operational: u32,
+	pub mandatory: u32,
 }
 
 /// Helper function to fetch constants from chain API
@@ -27,11 +50,11 @@ pub async fn fetch_constants<C: ChainClientTrait>(
 		.fetch_constant::<u32>("MultiBlockElection", "Pages")
 		.await?;
 	let max_winners_per_page = client
-		.fetch_constant::<u32>("MultiBlockElection", "MaxWinnersPerPage")
+		.fetch_constant::<u32>("MultiBlockElectionVerifier", "MaxWinnersPerPage")
 		.await
 		.unwrap_or(256);
 	let max_backers_per_winner = client
-		.fetch_constant::<u32>("MultiBlockElection", "MaxBackersPerWinner")
+		.fetch_constant::<u32>("MultiBlockElectionVerifier", "MaxBackersPerWinner")
 		.await
 		.unwrap_or(u32::MAX);
 	let voter_snapshot_per_block = client
@@ -42,14 +65,13 @@ pub async fn fetch_constants<C: ChainClientTrait>(
 		.fetch_constant::<u32>("MultiBlockElection", "TargetSnapshotPerBlock")
 		.await
 		.unwrap_or(100);
-	let max_length = client
-		.fetch_constant::<u32>("MultiBlockElection", "MaxLength")
+
+	let block_length = client
+		.fetch_constant::<BlockLength>("System", "BlockLength")
 		.await
-		.unwrap_or(22500);
-	let max_votes_per_voter = client
-		.fetch_constant::<u32>("Staking", "MaxNominations")
-		.await
-		.unwrap_or(16);
+		.unwrap_or(BlockLength { max: PerDispatchClass { normal: 1, operational: 2, mandatory: 3 } });
+
+	let max_length = Percent::from_percent(75) * block_length.total();
 
 	Ok(MinerConstants {
 		pages,
@@ -58,7 +80,6 @@ pub async fn fetch_constants<C: ChainClientTrait>(
 		voter_snapshot_per_block,
 		target_snapshot_per_block,
 		max_length,
-		max_votes_per_voter,
 	})
 }
 
@@ -74,7 +95,7 @@ static RUNTIME_CONFIG: OnceLock<MinerConstants> = OnceLock::new();
 struct ElectionConfig {
 	algorithm: Algorithm,
 	iterations: usize,
-	max_votes_per_voter: Option<u32>,
+	max_votes_per_voter: u32,
 }
 task_local! {
 	static ELECTION_CONFIG: ElectionConfig;
@@ -84,7 +105,7 @@ task_local! {
 static ELECTION_CONFIG_FALLBACK: Mutex<ElectionConfig> = Mutex::new(ElectionConfig {
 	algorithm: Algorithm::SeqPhragmen,
 	iterations: 0,
-	max_votes_per_voter: None,
+	max_votes_per_voter: 16,
 });
 
 /// Set the runtime miner constants (should be called once at startup)
@@ -97,7 +118,16 @@ pub fn set_runtime_constants(constants: MinerConstants) {
 /// Note: For concurrent API requests, use `with_election_config` instead
 /// to ensure each request gets its own isolated value.
 /// This function sets a global fallback value, which works for CLI usage.
-pub fn set_election_config(algorithm: Algorithm, iterations: usize, max_votes_per_voter: Option<u32>) {
+pub fn set_election_config(chain: Chain, algorithm: Algorithm, iterations: usize, max_votes_per_voter: Option<u32>) {
+	let max_votes_per_voter = if let Some(max_votes_per_voter) = max_votes_per_voter {
+		max_votes_per_voter
+	} else {
+		match chain {
+			Chain::Polkadot => 16,
+			Chain::Kusama => 24,
+			Chain::Substrate => 16,
+		}
+	};
 	*ELECTION_CONFIG_FALLBACK.lock().unwrap() = ElectionConfig {
 		algorithm,
 		iterations,
@@ -106,10 +136,19 @@ pub fn set_election_config(algorithm: Algorithm, iterations: usize, max_votes_pe
 }
 
 /// Run a future with a specific algorithm, balancing iterations, and max votes per voter set for this task.
-pub async fn with_election_config<F, R>(algorithm: Algorithm, iterations: usize, max_votes_per_voter: Option<u32>, f: F) -> R
+pub async fn with_election_config<F, R>(chain: Chain, algorithm: Algorithm, iterations: usize, max_votes_per_voter: Option<u32>, f: F) -> R
 where
 	F: std::future::Future<Output = R>,
 {
+	let max_votes_per_voter = if let Some(max_votes_per_voter) = max_votes_per_voter {
+		max_votes_per_voter
+	} else {
+		match chain {
+			Chain::Polkadot => 16,
+			Chain::Kusama => 24,
+			Chain::Substrate => 16,
+		}
+	};
 	ELECTION_CONFIG.scope(ElectionConfig {
 		algorithm,
 		iterations,
@@ -185,7 +224,6 @@ impl sp_core::Get<u32> for MaxVotesPerVoter {
 		// If not set in request, use the chain constant
 		ELECTION_CONFIG.try_with(|v| v.max_votes_per_voter)
 			.unwrap_or_else(|_| ELECTION_CONFIG_FALLBACK.lock().unwrap().max_votes_per_voter)
-			.unwrap_or_else(|| get_runtime_constants().max_votes_per_voter)
 	}
 }
 

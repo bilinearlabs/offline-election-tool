@@ -152,19 +152,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Fetch all constants from chain API
     let miner_constants = miner_config::fetch_constants(&subxt_client).await?;
-    info!("Fetched constants: pages={}, max_winners_per_page={}, max_backers_per_winner={}, voter_snapshot_per_block={}, target_snapshot_per_block={}, max_length={}, max_votes_per_voter={}",
+    info!("Fetched constants: pages={}, max_winners_per_page={}, max_backers_per_winner={}, voter_snapshot_per_block={}, target_snapshot_per_block={}, max_length={}",
         miner_constants.pages,
         miner_constants.max_winners_per_page,
         miner_constants.max_backers_per_winner,
         miner_constants.voter_snapshot_per_block,
         miner_constants.target_snapshot_per_block,
         miner_constants.max_length,
-        miner_constants.max_votes_per_voter
     );
     
     // Set runtime constants
     miner_config::set_runtime_constants(miner_constants.clone());
-    
+
     match args.action {
         Action::Simulate(simulate_args) => {
             let block: Option<H256> = if simulate_args.block == "latest" {
@@ -179,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let algorithm = simulate_args.algorithm;
             let iterations = simulate_args.iterations;
             let max_nominations = simulate_args.max_nominations;
-            miner_config::set_election_config(algorithm, iterations, max_nominations);
+            miner_config::set_election_config(chain, algorithm, iterations, max_nominations);
             let apply_reduce = simulate_args.reduce;
             let manual_override = if let Some(path) = simulate_args.manual_override.clone() {
                 let file = std::fs::read(&path)
@@ -195,6 +194,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             let election_result = with_miner_config!(chain, {
                 let multi_block_client = MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone());
+                let storage = multi_block_client.get_storage(block).await?;
+                // print phase
+                let phase = multi_block_client.get_phase(&storage).await?;
+                info!("Phase: {:?}", phase);
+                
                 simulate::simulate::<_, Client, MinerConfig>(
                     &raw_client,
                     &multi_block_client,

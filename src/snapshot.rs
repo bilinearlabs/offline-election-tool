@@ -1,4 +1,3 @@
-use pallet_election_provider_multi_block::AllVoterPagesOf;
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use sp_core::H256;
 use sp_core::crypto::{Ss58Codec};
@@ -7,6 +6,7 @@ use futures::future::join_all;
 use tracing::info;
 
 use crate::multi_block_state_client::{BlockDetails, ChainClientTrait, ElectionSnapshotPage, MultiBlockClient, TargetSnapshotPage, VoterData, VoterSnapshotPage};
+use crate::primitives::AccountId;
 use frame_support::BoundedVec;
 use crate::{
     models::{Snapshot, SnapshotNominator, SnapshotValidator, StakingConfig}, 
@@ -16,7 +16,7 @@ use crate::{
 pub async fn build<C: RpcClient, SC: ChainClientTrait, MC: MinerConfig + Send + Sync>(
 multi_block_client: &MultiBlockClient<SC, MC>, raw_client: &RawClient<C>, block: Option<H256>) -> Result<Snapshot, Box<dyn std::error::Error>>
 where
-    <MC as MinerConfig>::AccountId: Ss58Codec + From<crate::primitives::AccountId>,
+    MC: MinerConfig<AccountId = AccountId> + Send,
     MC::TargetSnapshotPerBlock: Send,
     MC::VoterSnapshotPerBlock: Send,
     MC::Pages: Send,
@@ -73,23 +73,21 @@ pub async fn get_snapshot_data_from_multi_block<C: RpcClient, SC: ChainClientTra
     block_details: &BlockDetails,
 ) -> Result<(ElectionSnapshotPage<MC>, StakingConfig), Box<dyn std::error::Error>>
 where
-    <MC as MinerConfig>::AccountId: From<crate::primitives::AccountId>,
+    AccountId: Send,
 {
     let staking_config = get_staking_config_from_multi_block(client, block_details).await?;
     if block_details.phase.has_snapshot() {
-        let mut voters_vec = Vec::new();
+        let mut voters = Vec::new();
         for page in 0..block_details.n_pages {
             let voters_page = client.fetch_paged_voter_snapshot(&block_details.storage, block_details.round, page).await?;
-            voters_vec.push(voters_page);
+            voters.push(voters_page);
         }
-        let voters: AllVoterPagesOf<MC> = voters_vec.try_into()
-            .map_err(|_| "Too many voter pages")?;
 
         let target_snapshot = client.fetch_paged_target_snapshot(&block_details.storage, block_details.round, block_details.n_pages - 1).await?;
 
         return Ok((
             ElectionSnapshotPage::<MC> {
-                voters: voters,
+                voters,
                 targets: target_snapshot,
             },
             staking_config));
@@ -97,16 +95,12 @@ where
     info!("No snapshot found, getting validators and nominators from staking storage");
 
     let nominators = raw_client.get_nominators(block_details.block_hash).await?;
-    let validators = raw_client.get_validators(block_details.block_hash).await?;
-
-    // Convert validators and nominators to MC::AccountId type
-    let mut validators_mc: Vec<<MC as MinerConfig>::AccountId> = validators.into_iter().map(|v| v.into()).collect();
-    let nominators_mc: Vec<<MC as MinerConfig>::AccountId> = nominators.into_iter().map(|v| v.into()).collect();
+    let mut validators = raw_client.get_validators(block_details.block_hash).await?;
 
     // Prepare data for ElectionSnapshotPage
     let min_nominator_bond = staking_config.min_nominator_bond;
 
-    let nominator_futures: Vec<_> = nominators_mc.into_iter().map(|nominator| {
+    let nominator_futures: Vec<_> = nominators.into_iter().map(|nominator| {
         let storage = &block_details.storage;
         async move {
             let nominations = client.get_nominator(storage, nominator.clone()).await
@@ -134,7 +128,7 @@ where
             let mut targets = nominations.targets.clone();
             targets.truncate(max_nominations as usize);
             let targets_mc = BoundedVec::try_from(
-                targets.into_iter().map(|t| t.into()).collect::<Vec<_>>()
+                targets.into_iter().map(|t| t.into()).collect::<Vec<AccountId>>()
             ).map_err(|_| "Too many targets in voter".to_string())?;
             Ok(Some((nominator, stake.active as u64, targets_mc)))
         }
@@ -151,7 +145,7 @@ where
     
     if min_validator_bond > 0 {
         let storage = &block_details.storage;
-        let validators_futures: Vec<_> = validators_mc.into_iter().map(|validator| {
+        let validators_futures: Vec<_> = validators.into_iter().map(|validator| {
             let client = client;
             async move {
                 let controller = client.get_controller_from_stash(storage, validator.clone()).await
@@ -163,10 +157,10 @@ where
                 let has_sufficient_bond = client.ledger(storage, controller).await
                     .map_err(|e| e.to_string())?
                     .map_or(false, |l| l.active >= min_validator_bond);
-                Ok::<Option<<MC as MinerConfig>::AccountId>, String>(has_sufficient_bond.then_some(validator))
+                    Ok::<Option<AccountId>, String>(has_sufficient_bond.then_some(validator))
             }
         }).collect();
-        validators_mc = join_all(validators_futures)
+        validators = join_all(validators_futures)
             .await
             .into_iter()
             .filter_map(|result| result.ok().flatten())
@@ -175,15 +169,13 @@ where
 
     // Prepare data for ElectionSnapshotPage
     // divide in pages
-    let voters_vec: Vec<VoterSnapshotPage<MC>> = voters
+    let voters: Vec<VoterSnapshotPage<MC>> = voters
         .chunks(MC::VoterSnapshotPerBlock::get() as usize)
         .map(|chunk| BoundedVec::try_from(chunk.to_vec()).map_err(|_| "Too many voters in chunk"))
         .collect::<Result<Vec<_>, _>>()?;
-    let voters: AllVoterPagesOf<MC> = voters_vec.try_into()
-        .map_err(|_| "Too many voter pages")?;
 
     let targets = TargetSnapshotPage::<MC>::try_from(
-        validators_mc.into_iter().map(|v| v.into()).collect::<Vec<<MC as MinerConfig>::AccountId>>()
+        validators.into_iter().map(|v| v.into()).collect::<Vec<AccountId>>()
     ).map_err(|_| "Too many targets")?;
 
     let election_snapshot_page = ElectionSnapshotPage::<MC> {

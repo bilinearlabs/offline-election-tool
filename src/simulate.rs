@@ -13,7 +13,7 @@ use futures::future::join_all;
 use sp_runtime::Perbill;
 use tracing::info;
 use frame_support::BoundedVec;
-use crate::multi_block_state_client::VoterData;
+use crate::multi_block_state_client::{VoterData, VoterSnapshotPage};
 
 use crate::{
     models::{Validator, ValidatorNomination}, multi_block_state_client::{ChainClientTrait, MultiBlockClient}, primitives::AccountId, raw_state_client::{RawClient, RpcClient}, snapshot
@@ -43,98 +43,17 @@ pub async fn simulate<C: RpcClient, SC: ChainClientTrait, MC: MinerConfig>(
     min_validator_bond: Option<u128>,
 ) -> Result<SimulationResult, Box<dyn std::error::Error>>
 where
-    <MC as MinerConfig>::AccountId: Ss58Codec + From<crate::primitives::AccountId>,
+    MC: MinerConfig<AccountId = AccountId> + Send,
     <MC as MinerConfig>::TargetSnapshotPerBlock: Send,
     <MC as MinerConfig>::VoterSnapshotPerBlock: Send,
     <MC as MinerConfig>::Pages: Send,
     <MC as MinerConfig>::MaxVotesPerVoter: Send,
 {
-    info!("Simulating election...");
+
     let block_details = multi_block_state_client.get_block_details(at).await?;
-
-    // TODO remove when multi-block is implemented
-    // let (snapshot, stake_config) = snapshot::get_snapshot_data(client, at)
-    //     .await
-    //     .map_err(|e| format!("Error getting snapshot data: {}", e))?;
-    // let mut voters: Vec<(AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = snapshot.voters.clone();
-    // let mut targets: Vec<AccountId> = snapshot.targets.clone();
-
-    // // Apply manual override if provided
-    // if let Some(path) = manual_override {
-    //     let file = std::fs::read(&path)
-    //         .map_err(|e| format!("Failed to read manual override file '{}': {}", path, e))?;
-    //     let manual: Override = serde_json::from_slice(&file)
-    //         .map_err(|e| format!("Failed to parse manual override JSON: {}", e))?;
-
-    //     // Add any additional candidates
-    //     for c in &manual.candidates {
-    //         let candidate_id = AccountId::from_ss58check(c)?;
-    //         if targets.contains(&candidate_id) {
-    //             info!("manual override: {:?} is already a candidate.", c);
-    //         } else {
-    //             info!("manual override: {:?} is added as candidate.", c);
-    //             targets.push(candidate_id);
-    //         }
-    //     }
-
-    //     // Remove candidates in the removal list
-    //     let candidates_to_remove: Vec<AccountId> = manual.candidates_remove
-    //         .iter()
-    //         .map(|c| AccountId::from_ss58check(c))
-    //         .collect::<Result<_, _>>()?;
-    //     targets.retain(|c| !candidates_to_remove.contains(c));
-
-    //     // Add or override voters
-    //     for v in &manual.voters {
-    //         let voter_id = AccountId::from_ss58check(&v.0)?;
-    //         let stake = v.1;
-    //         let votes: Vec<AccountId> = v.2.iter()
-    //             .map(|vote| AccountId::from_ss58check(vote))
-    //             .collect::<Result<_, _>>()?;
-    //         let bounded_votes: BoundedVec<AccountId, ConstU32<16>> = votes.try_into()
-    //             .map_err(|_| "Too many nominations (max 16)")?;
-
-    //         if let Some(existing_voter) = voters.iter_mut().find(|vv| vv.0 == voter_id) {
-    //             info!("manual override: {:?} is already a voter. Overriding votes.", v.0);
-    //             existing_voter.1 = stake;
-    //             existing_voter.2 = bounded_votes;
-    //         } else {
-    //             info!("manual override: {:?} is added as voter.", v.0);
-    //             voters.push((voter_id, stake, bounded_votes));
-    //         }
-    //     }
-
-    //     // Remove voters in the removal list
-    //     let voters_to_remove: Vec<AccountId> = manual.voters_remove
-    //         .iter()
-    //         .map(|v| AccountId::from_ss58check(v))
-    //         .collect::<Result<_, _>>()?;
-    //     voters.retain(|v| !voters_to_remove.contains(&v.0));
-    // }
-
-    // // Filter voters
-    // let min_nominator_bond = stake_config.min_nominator_bond;
-    // let filtered_voters: Vec<(AccountId, u64, BoundedVec<AccountId, ConstU32<16>>)> = voters.iter()
-    //     .filter(|voter| voter.1 as u128 >= min_nominator_bond)
-    //     .cloned()
-    //     .collect();
-
-    // let desired_validators = if targets_count.is_some() {
-    //     targets_count.unwrap()
-    // } else {
-    //     stake_config.desired_validators as usize
-    // };
-
-    // let iterations = get_balancing_iterations();
-    // let balancing_config = if iterations > 0 {
-    //     Some(BalancingConfig { iterations: iterations, tolerance: 0 })
-    // } else {
-    //     None
-    // };
-
-
+    info!("Fetching snapshot data for election...");
     let (mut snapshot, staking_config) = snapshot::get_snapshot_data_from_multi_block(multi_block_state_client, raw_state_client, &block_details).await?;
-    
+
     // Apply min_nominator_bond filter if provided > 0
     let effective_min_nominator_bond = min_nominator_bond.unwrap_or(0);
     if effective_min_nominator_bond > 0 {
@@ -166,7 +85,7 @@ where
                 let controller = multi_block_state_client.get_controller_from_stash(&storage, validator.clone()).await
                     .map_err(|e| format!("Error getting controller: {}", e))?;
                 if controller.is_none() {
-                    return Ok::<Option<<MC as MinerConfig>::AccountId>, String>(None);
+                    return Ok::<Option<AccountId>, String>(None);
                 }
                 let controller = controller.unwrap();
                 let ledger = multi_block_state_client.ledger(&storage, controller).await
@@ -189,13 +108,12 @@ where
     
     // Manual override
     if let Some(manual) = manual_override {
-
         // Convert targets to Vec for manipulation
-        let mut targets: Vec<<MC as MinerConfig>::AccountId> = snapshot.targets.iter().cloned().collect();
+        let mut targets: Vec<AccountId> = snapshot.targets.iter().cloned().collect();
 
         // Add any additional candidates
         for c in &manual.candidates {
-            let candidate_id: <MC as MinerConfig>::AccountId = AccountId::from_ss58check(c)?.into();
+            let candidate_id: AccountId = AccountId::from_ss58check(c)?;
             if targets.contains(&candidate_id) {
                 info!("manual override: {:?} is already a candidate.", c);
             } else {
@@ -206,7 +124,7 @@ where
 
         // Remove candidates in the removal list
         for c in &manual.candidates_remove {
-            let candidate_id: <MC as MinerConfig>::AccountId = AccountId::from_ss58check(c)?.into();
+            let candidate_id: AccountId = AccountId::from_ss58check(c)?;
             if targets.contains(&candidate_id) {
                 info!("manual override: {:?} is removed as candidate.", c);
                 targets.retain(|x| x != &candidate_id);
@@ -227,15 +145,15 @@ where
 
         // Add or override voters
         for v in &manual.voters {
-            let voter_id: <MC as MinerConfig>::AccountId = AccountId::from_ss58check(&v.0)?.into();
+            let voter_id: AccountId = AccountId::from_ss58check(&v.0)?;
             let stake = v.1;
-            let votes: Vec<<MC as MinerConfig>::AccountId> = v.2.iter()
+            let votes: Vec<AccountId> = v.2.iter()
                 .map(|vote| AccountId::from_ss58check(vote).map(|id| id.into()))
                 .collect::<Result<_, _>>()?;
             let bounded_votes = BoundedVec::try_from(votes)
                 .map_err(|_| "Too many nominations")?;
 
-            let voter_data: VoterData<MC> = (voter_id, stake, bounded_votes);
+            let voter_data: VoterData<MC> = (voter_id.clone(), stake, bounded_votes);
             if let Some(existing_voter) = all_voters.iter_mut().find(|vv| vv.0 == voter_data.0) {
                 info!("manual override: {:?} is already a voter. Overriding votes.", v.0);
                 *existing_voter = voter_data;
@@ -247,7 +165,7 @@ where
 
         // Remove voters in the removal list
         for v in &manual.voters_remove {
-            let voter_id: <MC as MinerConfig>::AccountId = AccountId::from_ss58check(v)?.into();
+            let voter_id: AccountId = AccountId::from_ss58check(v)?;
             if all_voters.iter().any(|vv| vv.0 == voter_id) {
                 info!("manual override: {:?} is removed as voter.", v);
                 all_voters.retain(|vv| vv.0 != voter_id);
@@ -269,25 +187,28 @@ where
         staking_config.desired_validators
     };
 
-    // Use actual voter pages for minins solution when snapshot is not available and is created from staking
-    let actual_voter_pages = snapshot.voters.len() as u32;
+    let voter_pages: BoundedVec<VoterSnapshotPage<MC>, MC::Pages> = BoundedVec::truncate_from(snapshot.voters);
+
+    // Use actual voter pages for mining solution when snapshot is not available and is created from staking
+    let actual_voter_pages = voter_pages.len() as u32;
     
     let mine_input = MineInput {
 		desired_targets: desired_targets,
 		all_targets: snapshot.targets.clone(),
-		voter_pages: snapshot.voters.clone(),
+		voter_pages: voter_pages.clone(),
 		pages: actual_voter_pages,
 		do_reduce: apply_reduce,
 		round: block_details.round,
 	};
+    info!("Mining solution for election...");
     let paged_solution = BaseMiner::<MC>::mine_solution(mine_input)
         .map_err(|e| format!("Error mining solution: {:?}", e))?;
-    
+
     // Convert each solution page to supports and combine them
-    let mut total_supports: BTreeMap<<MC as MinerConfig>::AccountId, Support<<MC as MinerConfig>::AccountId>> = BTreeMap::new();
+    let mut total_supports: BTreeMap<AccountId, Support<AccountId>> = BTreeMap::new();
     
     for (page_index, solution_page) in paged_solution.solution_pages.iter().enumerate() {
-        let voter_page = snapshot.voters.get(page_index)
+        let voter_page = voter_pages.get(page_index)
             .ok_or(format!("Voter page {} not found", page_index))?;
         
         // Convert solution page to supports
@@ -317,51 +238,8 @@ where
     }
     
     // Extract winners from supports
-    let winners: Vec<(<MC as MinerConfig>::AccountId, Support<<MC as MinerConfig>::AccountId>)> = 
+    let winners: Vec<(AccountId, Support<AccountId>)> = 
         total_supports.into_iter().collect();
-
-    // // Run the selected algorithm
-    // let election_result = match algorithm {
-    //     Algorithm::SeqPhragmen => seq_phragmen::<AccountId, Perbill>(
-    //         desired_validators,
-    //         targets,
-    //         filtered_voters.clone(),
-    //         balancing_config,
-    //     ),
-    //     Algorithm::Phragmms => phragmms::<AccountId, Perbill>(
-    //         desired_validators,
-    //         targets,
-    //         filtered_voters.clone(),
-    //         balancing_config,
-    //     ),
-    // };
-    
-    // if election_result.is_err() {
-    //     return Err("Election error".into());
-    // }
-
-    // let ElectionResult { winners, assignments } = election_result.unwrap();
-
-    // // Store voter weight in a map to use it in the assignment_ratio_to_staked function
-    // let mut voter_weight: BTreeMap<AccountId, VoteWeight> = BTreeMap::new();
-
-	// for (voter, budget, _) in filtered_voters.clone().iter() {
-	// 	voter_weight.insert(voter.clone(), *budget);
-	// }
-
-	// let weight_of = |who: &AccountId| -> VoteWeight { *voter_weight.get(who).unwrap() };
-
-    // let staked_assignments = assignment_ratio_to_staked_normalized(assignments, weight_of);
-    // if staked_assignments.is_err() {
-    //     return Err("Error in assignment_ratio_to_staked_normalized".into());
-    // }
-    // let mut staked_assignments = staked_assignments.unwrap();
-    
-    // if apply_reduce {
-    //     reduce(staked_assignments.as_mut());
-    // }
-
-    // let supports = to_support_map::<AccountId>( staked_assignments.as_slice());
 
     let validator_futures: Vec<_> = winners.into_iter().map(|(winner, support)| {
         let storage = block_details.storage.clone();

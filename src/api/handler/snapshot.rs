@@ -5,13 +5,9 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::{
-    api::routes::root::{AppState},
-    api::utils,
-    api::error::AppError,
-    snapshot,
+    api::{error::AppError, routes::root::AppState, utils}, primitives::AccountId, snapshot
 };
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
-use sp_core::crypto::Ss58Codec;
 
 #[derive(Deserialize)]
 pub struct SnapshotRequest {
@@ -30,7 +26,7 @@ pub async fn snapshot_handler<T: MinerConfig + Send + Sync + Clone>(
     Query(params): Query<SnapshotRequest>,
 ) -> (StatusCode, Json<SnapshotResponse>)
 where
-    T::AccountId: Ss58Codec + Send + From<crate::primitives::AccountId>,
+    T: MinerConfig<AccountId = AccountId> + Send,
     T::TargetSnapshotPerBlock: Send,
     T::VoterSnapshotPerBlock: Send,
     T::Pages: Send,

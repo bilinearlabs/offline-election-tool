@@ -2,15 +2,9 @@ use axum::{
     extract::{Query, State}, http::StatusCode, response::Json
 };
 use serde::{Deserialize, Serialize};
-use sp_core::crypto::Ss58Codec;
 
 use crate::{
-    api::routes::root::{AppState},
-    api::utils,
-    api::error::AppError,
-    models::Algorithm,
-    simulate::{self, Override},
-    miner_config,
+    api::{error::AppError, routes::root::AppState, utils}, miner_config, models::Algorithm, primitives::AccountId, simulate::{self, Override}
 };
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 
@@ -45,7 +39,7 @@ pub async fn simulate_handler<T: MinerConfig + Send + Sync + Clone>(
     Json(body): Json<SimulateRequestBody>,
 ) -> (StatusCode, Json<SimulateResponse>)
 where
-    T::AccountId: Ss58Codec + Send + From<crate::primitives::AccountId>,
+    T: MinerConfig<AccountId = AccountId> + Send,
     T::TargetSnapshotPerBlock: Send,
     T::VoterSnapshotPerBlock: Send,
     T::Pages: Send,
@@ -75,7 +69,7 @@ where
     
     // Run simulation within task-local scope for algorithm, iterations, and max nominations
     // This ensures each concurrent request gets its own isolated value
-    let result = miner_config::with_election_config(algorithm, iterations, max_nominations, async {
+    let result = miner_config::with_election_config(state.chain, algorithm, iterations, max_nominations, async {
         simulate::simulate(
             raw_state_client,
             multi_block_client,

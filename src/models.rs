@@ -1,7 +1,7 @@
 use serde::{Serialize, Deserialize};
 use sp_core::crypto::{Ss58AddressFormat};
 
-use crate::primitives::{AccountId, Balance};
+use crate::primitives::{Balance};
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum Chain {
@@ -44,31 +44,12 @@ pub struct Validator {
 }
 
 #[derive(Debug, Serialize)]
-pub struct NominatorStake {
-    pub validator: String,
-    pub stake: Balance,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Nominator {
-    pub stash: String,
-    pub active_stakes: Vec<NominatorStake>,
-}
-
-#[derive(Debug, Serialize)]
 pub struct StakingConfig {
     pub desired_validators: u32,
     pub max_nominations: u32,
     pub min_nominator_bond: u128,
     pub min_validator_bond: u128,
 }
-
-// #[derive(Debug, Serialize)]
-// pub struct SnapshotExposure {
-//     pub validators: Vec<Validator>,
-//     pub nominators: Vec<Nominator>,
-//     pub config: StakingConfig,
-// }
 
 #[derive(Debug, Serialize)]
 pub struct SnapshotValidator {

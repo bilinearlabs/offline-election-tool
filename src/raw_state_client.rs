@@ -37,7 +37,7 @@ pub struct StakingLedger {
 #[derive(Debug, Clone, Decode)]
 pub struct NominationsLight<AccountId> {
     pub targets: Vec<AccountId>,
-    pub submitted_in: EraIndex,
+    pub _submitted_in: EraIndex,
     pub suppressed: bool,
 }
 

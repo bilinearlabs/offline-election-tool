@@ -5,10 +5,11 @@ use parity_scale_codec::{Decode, Encode};
 use parity_scale_codec as codec;
 use frame_support::BoundedVec;
 use frame_election_provider_support::Voter;
-use pallet_election_provider_multi_block::{AllVoterPagesOf, unsigned::miner::MinerConfig};
+use pallet_election_provider_multi_block::{unsigned::miner::MinerConfig};
 use sp_core::Get;
+use subxt::dynamic::Value;
 
-use crate::primitives::Hash;
+use crate::primitives::{AccountId, Hash};
 use subxt::ext::{scale_value};
 use std::marker::PhantomData;
 
@@ -96,17 +97,17 @@ impl Phase {
 }
 
 // Generic voter type for use with MinerConfig
-pub type VoterData<MC> = Voter<<MC as MinerConfig>::AccountId, <MC as MinerConfig>::MaxVotesPerVoter>;
+pub type VoterData<MC> = Voter<AccountId, <MC as MinerConfig>::MaxVotesPerVoter>;
 
-pub type VoterSnapshotPage<MC: MinerConfig> = 
+pub type VoterSnapshotPage<MC> = 
 	BoundedVec<VoterData<MC>, <MC as MinerConfig>::VoterSnapshotPerBlock>;
 
 // Type aliases for snapshot pages using MinerConfig
-pub type TargetSnapshotPage<MC: MinerConfig> =
-	BoundedVec<<MC as MinerConfig>::AccountId, <MC as MinerConfig>::TargetSnapshotPerBlock>;
+pub type TargetSnapshotPage<MC> =
+	BoundedVec<AccountId, <MC as MinerConfig>::TargetSnapshotPerBlock>;
 
 pub struct ElectionSnapshotPage<MC: MinerConfig> {
-	pub voters: AllVoterPagesOf<MC>,
+	pub voters: Vec<VoterSnapshotPage<MC>>,
 	pub targets: TargetSnapshotPage<MC>,
 }
 
@@ -141,7 +142,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
 			n_pages, 
 			round, 
 			desired_targets, 
-			block_number,
+			_block_number: block_number,
 			block_hash,
 		})
     }
@@ -164,7 +165,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         let storage_key = subxt::dynamic::storage(
             "MultiBlockElection",
             "DesiredTargets",
-            vec![subxt::dynamic::Value::u128(round as u128)],
+            vec![Value::from(round)],
         );
         let desired_targets_entry = storage
             .fetch(&storage_key)
@@ -205,7 +206,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         let storage_key = subxt::dynamic::storage(
             "MultiBlockElection",
             "PagedVoterSnapshot",
-            vec![subxt::dynamic::Value::u128(round as u128), subxt::dynamic::Value::u128(page as u128)],
+            vec![Value::from(round), Value::from(page)],
         );
         let voter_snapshot_entry = storage.fetch(&storage_key)
             .await?
@@ -220,7 +221,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         let storage_key = subxt::dynamic::storage(
             "MultiBlockElection",
             "PagedTargetSnapshot",
-            vec![subxt::dynamic::Value::u128(round as u128), subxt::dynamic::Value::u128(page as u128)],
+            vec![Value::from(round), Value::from(page)],
         );
         let target_snapshot_entry = storage.fetch(&storage_key)
             .await?
@@ -229,7 +230,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         Ok(target_snapshot)
     }
     
-    pub async fn get_validator_prefs(&self, storage: &Storage, validator: <MC as MinerConfig>::AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error>> {
+    pub async fn get_validator_prefs(&self, storage: &Storage, validator: AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error>> {
         let encoded_validator = validator.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Validators", vec![scale_value::Value::from(encoded_validator)]);
         let validator_prefs_entry = storage.fetch(&storage_key)
@@ -239,12 +240,12 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         Ok(validator_prefs)
     }
 
-    pub async fn get_nominator(&self, storage: &Storage, nominator: <MC as MinerConfig>::AccountId) -> Result<Option<NominationsLight<<MC as MinerConfig>::AccountId>>, Box<dyn std::error::Error>> {
+    pub async fn get_nominator(&self, storage: &Storage, nominator: AccountId) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error>> {
         let encoded_nominator = nominator.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Nominators", vec![scale_value::Value::from(encoded_nominator)]);
         match storage.fetch(&storage_key).await? {
             Some(entry) => {
-                let nominations: NominationsLight<<MC as MinerConfig>::AccountId> = codec::Decode::decode(&mut entry.encoded())?;
+                let nominations: NominationsLight<AccountId> = codec::Decode::decode(&mut entry.encoded())?;
                 Ok(Some(nominations))
             }
             None => Ok(None),
@@ -252,19 +253,19 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
     }
 
     // Get controller account for a given stash account
-    pub async fn get_controller_from_stash(&self, storage: &Storage, stash: <MC as MinerConfig>::AccountId) -> Result<Option<<MC as MinerConfig>::AccountId>, Box<dyn std::error::Error>> {
+    pub async fn get_controller_from_stash(&self, storage: &Storage, stash: AccountId) -> Result<Option<AccountId>, Box<dyn std::error::Error>> {
         let encoded_stash = stash.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Bonded", vec![scale_value::Value::from(encoded_stash)]);
         match storage.fetch(&storage_key).await? {
             Some(entry) => {
-                let controller: <MC as MinerConfig>::AccountId = codec::Decode::decode(&mut entry.encoded())?;
+                let controller: AccountId = codec::Decode::decode(&mut entry.encoded())?;
                 Ok(Some(controller))
             }
             None => Ok(None),
         }
     }
 
-    pub async fn ledger(&self, storage: &Storage, account: <MC as MinerConfig>::AccountId) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>> {
+    pub async fn ledger(&self, storage: &Storage, account: AccountId) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>> {
         let encoded_account = account.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Ledger", vec![scale_value::Value::from(encoded_account)]);
         match storage.fetch(&storage_key).await? {
@@ -286,6 +287,6 @@ pub struct BlockDetails {
 	pub n_pages: u32,
 	pub round: u32,
 	pub desired_targets: u32,
-	pub block_number: u32,
+	pub _block_number: u32,
 	pub block_hash: Option<Hash>,
 }
