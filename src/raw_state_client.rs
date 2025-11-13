@@ -243,6 +243,7 @@ mod tests {
     use super::*;
     use mockall::mock;
     use mockall::predicate::*;
+    use serde_json::Value;
     use sp_core::storage::StorageData;
     use sp_runtime::Perbill;
 
@@ -383,6 +384,56 @@ mod tests {
         let client = RawClient { client: mock_client };
         let result = client.get_runtime_version().await;
         assert_eq!(result.unwrap(), runtime_version);
+    }
+
+    #[tokio::test]
+    async fn test_get_keys_paged() {
+        let mut mock_client = MockRpcClient::new();
+        let keys = vec![StorageKey(vec![1u8; 32])];
+        let keys_for_mock = keys.clone();
+        mock_client
+            .expect_rpc_request::<Vec<StorageKey>, (Value, u32, Option<Value>, Value)>()
+            .with(eq("state_getKeysPaged"), mockall::predicate::always())
+            .returning(move |_, _| Ok(keys_for_mock.clone()));
+        let client = RawClient { client: mock_client };
+        let result = client.get_keys_paged(StorageKey(vec![1u8; 32]), 100, None, None).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), keys);
+    }
+
+    #[tokio::test]
+    async fn test_get_all_keys() {
+        let mut mock_client = MockRpcClient::new();
+        let keys_page_1: Vec<StorageKey> = (0..1000).map(|i| StorageKey(vec![i as u8; 32])).collect();
+        let keys_page_2: Vec<StorageKey> = (1000..1500).map(|i| StorageKey(vec![i as u8; 32])).collect();
+        let mut call_count = 0;
+        mock_client
+            .expect_rpc_request::<Vec<StorageKey>, (Value, u32, Option<Value>, Value)>()
+            .with(eq("state_getKeysPaged"), mockall::predicate::always())
+            .returning(move |_, _| {
+                call_count += 1;
+                if call_count == 1 {
+                    Ok(keys_page_1.clone())
+                } else {
+                    Ok(keys_page_2.clone())
+                }
+            })
+            .times(2);
+        let client = RawClient { client: mock_client };
+        let result = client.get_all_keys(StorageKey(vec![1u8; 32]), None).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1500);
+    }
+
+    #[tokio::test]
+    async fn test_extract_key() {
+        let mock_client = MockRpcClient::new();
+        let client = RawClient { client: mock_client };
+        let mut key_bytes = vec![0u8; 32 + 8 + 32];
+        key_bytes[32 + 8..].copy_from_slice(&[1u8; 32]);
+        let key = StorageKey(key_bytes);
+        let result = client.extract_key::<AccountId>(&key, 32);
+        assert_eq!(result, Some(AccountId::from([1u8; 32])));
     }
 }
 
