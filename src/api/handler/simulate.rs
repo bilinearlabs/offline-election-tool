@@ -45,6 +45,7 @@ where
     T::Pages: Send,
     T::MaxVotesPerVoter: Send,
     T::Solution: Send,
+    T::MaxBackersPerWinner: Send,
 {
     let block = match utils::parse_block(params.block) {
         Ok(block) => block,

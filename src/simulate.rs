@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 
+use frame_election_provider_support::BoundedSupport;
 use pallet_staking::ValidatorPrefs;
 use serde::{Serialize, Deserialize};
 use sp_core::{crypto::Ss58Codec, Get, H256};
 use sp_npos_elections::Support;
 use pallet_election_provider_multi_block::{
     unsigned::miner::{BaseMiner, MineInput},
-    verifier::feasibility_check_page_inner_with_snapshot,
+    verifier::feasibility_check_page_inner_with_snapshot
 };
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use futures::future::join_all;
@@ -201,47 +202,29 @@ where
 		round: block_details.round,
 	};
     info!("Mining solution for election...");
+    
     let paged_solution = BaseMiner::<MC>::mine_solution(mine_input)
         .map_err(|e| format!("Error mining solution: {:?}", e))?;
 
     // Convert each solution page to supports and combine them
     let mut total_supports: BTreeMap<AccountId, Support<AccountId>> = BTreeMap::new();
-    
-    for (page_index, solution_page) in paged_solution.solution_pages.iter().enumerate() {
-        let voter_page = voter_pages.get(page_index)
-            .ok_or(format!("Voter page {} not found", page_index))?;
-        
-        // Convert solution page to supports
-        let page_supports = feasibility_check_page_inner_with_snapshot::<MC>(
-            solution_page.clone(),
-            voter_page,
-            &snapshot.targets,
-            staking_config.desired_validators,
-        ).map_err(|e| format!("Error converting solution page {} to supports: {:?}", page_index, e))?;
-        
-        // Combine supports from this page into total supports
-        for (winner, support) in page_supports.into_iter() {
+
+    let paged_supports = BaseMiner::<MC>::check_feasibility(
+        &paged_solution, &voter_pages, &snapshot.targets, desired_targets)
+        .map_err(|e| format!("Error checking feasibility: {:?}", e))?;
+
+    for page in paged_supports.iter() {
+        for (winner, support) in page.iter() {
             let entry = total_supports.entry(winner.clone()).or_insert_with(|| Support {
                 total: 0,
                 voters: Vec::new(),
             });
             entry.total = entry.total.saturating_add(support.total);
-            for (voter, stake) in support.voters {
-                if let Some(existing) = entry.voters.iter_mut().find(|(v, _)| *v == voter) {
-                    existing.1 = existing.1.max(stake);
-                    tracing::warn!("Voter {} appears multiple times for validator {}", voter.to_ss58check(), winner.to_ss58check());
-                } else {
-                    entry.voters.push((voter, stake));
-                }
-            }
+            entry.voters.extend(support.voters.clone().into_iter());
         }
     }
-    
-    // Extract winners from supports
-    let winners: Vec<(AccountId, Support<AccountId>)> = 
-        total_supports.into_iter().collect();
 
-    let validator_futures: Vec<_> = winners.into_iter().map(|(winner, support)| {
+    let validator_futures: Vec<_> = total_supports.into_iter().map(|(winner, support)| {
         let storage = block_details.storage.clone();
         async move {
             let validator_prefs = multi_block_state_client.get_validator_prefs(&storage, winner.clone()).await

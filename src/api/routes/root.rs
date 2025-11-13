@@ -26,10 +26,11 @@ where
 impl<T: MinerConfig + Send + Sync + Clone> Clone for AppState<T>
 where
     T: MinerConfig<AccountId = AccountId> + Send,
-    <T as MinerConfig>::TargetSnapshotPerBlock: Send,
-    <T as MinerConfig>::VoterSnapshotPerBlock: Send,
-    <T as MinerConfig>::Pages: Send,
-    <T as MinerConfig>::MaxVotesPerVoter: Send,
+    T::TargetSnapshotPerBlock: Send,
+    T::VoterSnapshotPerBlock: Send,
+    T::Pages: Send,
+    T::MaxVotesPerVoter: Send,
+    T::MaxBackersPerWinner: Send,
 {
     fn clone(&self) -> Self {
         Self {
@@ -43,11 +44,13 @@ where
 pub fn routes<T: MinerConfig + Send + Sync + Clone + 'static>(raw_state_client: Arc<RawClient<WsClient>>, multi_block_state_client: Arc<MultiBlockClient<Client, T>>, chain: Chain) -> IntoMakeService<Router>
 where
     T: MinerConfig<AccountId = AccountId> + Send,
-    T::TargetSnapshotPerBlock: Send + 'static,
-    T::VoterSnapshotPerBlock: Send + 'static,
-    T::Pages: Send + 'static,
-    T::MaxVotesPerVoter: Send + 'static,
-    T::Solution: Send + 'static,
+    T::TargetSnapshotPerBlock: Send,
+    T::VoterSnapshotPerBlock: Send,
+    T::Pages: Send,
+    T::MaxVotesPerVoter: Send,
+    T::Solution: Send,
+    T::MaxBackersPerWinner: Send,
+    T::MaxWinnersPerPage: Send,
 {
     let app_state = AppState {
         raw_state_client,
