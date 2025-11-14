@@ -6,8 +6,7 @@ use serde::{Serialize, Deserialize};
 use sp_core::{crypto::Ss58Codec, Get, H256};
 use sp_npos_elections::Support;
 use pallet_election_provider_multi_block::{
-    unsigned::miner::{BaseMiner, MineInput},
-    verifier::feasibility_check_page_inner_with_snapshot
+    PagedRawSolution, unsigned::miner::{BaseMiner, MineInput}, verifier::feasibility_check_page_inner_with_snapshot
 };
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use futures::future::join_all;
@@ -44,13 +43,14 @@ pub async fn simulate<C: RpcClient, SC: ChainClientTrait, MC: MinerConfig>(
     min_validator_bond: Option<u128>,
 ) -> Result<SimulationResult, Box<dyn std::error::Error>>
 where
+    MC: MinerConfig + 'static,
     MC: MinerConfig<AccountId = AccountId> + Send,
     <MC as MinerConfig>::TargetSnapshotPerBlock: Send,
     <MC as MinerConfig>::VoterSnapshotPerBlock: Send,
     <MC as MinerConfig>::Pages: Send,
     <MC as MinerConfig>::MaxVotesPerVoter: Send,
+    <MC as MinerConfig>::Solution: Send,
 {
-
     let block_details = multi_block_state_client.get_block_details(at).await?;
     info!("Fetching snapshot data for election...");
     let (mut snapshot, staking_config) = snapshot::get_snapshot_data_from_multi_block(multi_block_state_client, raw_state_client, &block_details).await?;
@@ -203,8 +203,11 @@ where
 	};
     info!("Mining solution for election...");
     
-    let paged_solution = BaseMiner::<MC>::mine_solution(mine_input)
-        .map_err(|e| format!("Error mining solution: {:?}", e))?;
+    let paged_solution = tokio::task::spawn_blocking(move || -> Result<PagedRawSolution<MC>, String> {
+        let solution = BaseMiner::<MC>::mine_solution(mine_input)
+            .map_err(|e| format!("Error mining solution: {:?}", e))?;
+        Ok(solution) 
+    }).await.unwrap()?;
 
     // Convert each solution page to supports and combine them
     let mut total_supports: BTreeMap<AccountId, Support<AccountId>> = BTreeMap::new();

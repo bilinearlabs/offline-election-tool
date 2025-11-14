@@ -39,6 +39,7 @@ pub async fn simulate_handler<T: MinerConfig + Send + Sync + Clone>(
     Json(body): Json<SimulateRequestBody>,
 ) -> (StatusCode, Json<SimulateResponse>)
 where
+    T: MinerConfig + 'static,
     T: MinerConfig<AccountId = AccountId> + Send,
     T::TargetSnapshotPerBlock: Send,
     T::VoterSnapshotPerBlock: Send,
