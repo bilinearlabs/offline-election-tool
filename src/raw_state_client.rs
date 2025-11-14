@@ -249,6 +249,7 @@ mod tests {
 
     // Mock the RpcClient trait
     mock! {
+        #[derive(Debug, Clone)]
         RpcClient {}
 
         #[async_trait::async_trait]
@@ -434,6 +435,56 @@ mod tests {
         let key = StorageKey(key_bytes);
         let result = client.extract_key::<AccountId>(&key, 32);
         assert_eq!(result, Some(AccountId::from([1u8; 32])));
+    }
+
+    #[tokio::test]
+    async fn test_enumerate_accounts() {
+        let mut mock_client = MockRpcClient::new();
+        let keys = vec![StorageKey(vec![0u8; 32 + 8 + 32])];
+        mock_client
+            .expect_rpc_request::<Vec<StorageKey>, (Value, u32, Option<Value>, Value)>()
+            .with(eq("state_getKeysPaged"), mockall::predicate::always())
+            .returning(move |_, _| Ok(keys.clone()));
+        let client = RawClient { client: mock_client };
+        let accounts = client.enumerate_accounts(b"Staking", b"Validators", None).await;
+        assert!(accounts.is_ok());
+        assert_eq!(accounts.unwrap(), vec![AccountId::from([0u8; 32])]);
+    }
+
+    #[tokio::test]
+    async fn test_get_validators() {
+        let mock_client = MockRpcClient::new();
+        let mut client = RawClient { client: mock_client };
+        let keys = vec![StorageKey(vec![0u8; 32 + 8 + 32])];
+        let prefix_key = client.value_key(b"Staking", b"Validators");
+        let serialized_prefix = to_value(prefix_key).unwrap();
+        let at = to_value(None::<H256>).unwrap();
+        let params: (Value, u32, Option<Value>, Value) = (serialized_prefix.clone(), 1000, None, at);
+        client.client
+            .expect_rpc_request::<Vec<StorageKey>, (Value, u32, Option<Value>, Value)>()
+            .with(eq("state_getKeysPaged"), eq(params))
+            .returning(move |_, _| Ok(keys.clone()));
+        let accounts = client.enumerate_accounts(b"Staking", b"Validators", None).await;
+        assert!(accounts.is_ok());
+        assert_eq!(accounts.unwrap(), vec![AccountId::from([0u8; 32])]);
+    }
+
+    #[tokio::test]
+    async fn test_get_nominators() {
+        let mock_client = MockRpcClient::new();
+        let mut client = RawClient { client: mock_client };
+        let keys = vec![StorageKey(vec![0u8; 32 + 8 + 32])];
+        let prefix_key = client.value_key(b"Staking", b"Nominators");
+        let serialized_prefix = to_value(prefix_key).unwrap();
+        let at = to_value(None::<H256>).unwrap();
+        let params: (Value, u32, Option<Value>, Value) = (serialized_prefix.clone(), 1000, None, at);
+        client.client
+            .expect_rpc_request::<Vec<StorageKey>, (Value, u32, Option<Value>, Value)>()
+            .with(eq("state_getKeysPaged"), eq(params))
+            .returning(move |_, _| Ok(keys.clone()));
+        let accounts = client.enumerate_accounts(b"Staking", b"Nominators", None).await;
+        assert!(accounts.is_ok());
+        assert_eq!(accounts.unwrap(), vec![AccountId::from([0u8; 32])]);
     }
 }
 
