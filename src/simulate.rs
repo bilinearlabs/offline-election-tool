@@ -12,7 +12,7 @@ use futures::future::join_all;
 use sp_runtime::Perbill;
 use tracing::info;
 use frame_support::BoundedVec;
-use crate::multi_block_state_client::{VoterData, VoterSnapshotPage};
+use crate::multi_block_state_client::{MultiBlockClientTrait, VoterData, VoterSnapshotPage};
 
 use crate::{
     models::{Validator, ValidatorNomination}, multi_block_state_client::{ChainClientTrait, MultiBlockClient}, primitives::AccountId, raw_state_client::{RawClient, RpcClient}, snapshot
@@ -49,6 +49,7 @@ where
     <MC as MinerConfig>::Pages: Send,
     <MC as MinerConfig>::MaxVotesPerVoter: Send,
     <MC as MinerConfig>::Solution: Send,
+    MC: Send + Sync + 'static,
 {
     let block_details = multi_block_state_client.get_block_details(at).await?;
     info!("Fetching snapshot data for election...");

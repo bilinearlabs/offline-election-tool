@@ -5,8 +5,8 @@ use sp_core::Get;
 use futures::future::join_all;
 use tracing::info;
 
-use crate::multi_block_state_client::{BlockDetails, ChainClientTrait, ElectionSnapshotPage, MultiBlockClient, TargetSnapshotPage, VoterData, VoterSnapshotPage};
-use crate::primitives::AccountId;
+use crate::multi_block_state_client::{BlockDetails, ChainClientTrait, ElectionSnapshotPage, MultiBlockClient, MultiBlockClientTrait, StorageTrait, TargetSnapshotPage, VoterData, VoterSnapshotPage};
+use crate::primitives::{AccountId, Storage};
 use frame_support::BoundedVec;
 use crate::{
     models::{Snapshot, SnapshotNominator, SnapshotValidator, StakingConfig}, 
@@ -70,10 +70,11 @@ where
 pub async fn get_snapshot_data_from_multi_block<C: RpcClient, SC: ChainClientTrait, MC: MinerConfig>(
     client: &MultiBlockClient<SC, MC>,
     raw_client: &RawClient<C>,
-    block_details: &BlockDetails,
+    block_details: &BlockDetails<Storage>,
 ) -> Result<(ElectionSnapshotPage<MC>, StakingConfig), Box<dyn std::error::Error>>
 where
     AccountId: Send,
+    MC: Send + Sync + 'static,
 {
     let staking_config = get_staking_config_from_multi_block(client, block_details).await?;
     if block_details.phase.has_snapshot() {
@@ -186,113 +187,130 @@ where
     Ok((election_snapshot_page, staking_config))
 }
 
-pub async fn get_staking_config_from_multi_block<C: crate::multi_block_state_client::ChainClientTrait, MC: MinerConfig>(
-    client: &MultiBlockClient<C, MC>,
-    block_details: &BlockDetails,
-) -> Result<StakingConfig, Box<dyn std::error::Error>> {
+pub async fn get_staking_config_from_multi_block<
+    C: crate::multi_block_state_client::ChainClientTrait + Send + Sync + 'static, 
+    MC: MinerConfig + Send + Sync + 'static, 
+    MBC: MultiBlockClientTrait<C, MC> + Send + Sync + 'static,
+    S: StorageTrait + 'static>(
+    client: &MBC,
+    block_details: &BlockDetails<S>,
+) -> Result<StakingConfig, Box<dyn std::error::Error>>
+where
+    MC: Send + Sync + 'static,
+{
     let max_nominations = MC::MaxVotesPerVoter::get();
     let min_nominator_bond = client.get_min_nominator_bond(&block_details.storage).await?;
     let min_validator_bond = client.get_min_validator_bond(&block_details.storage).await?;
     Ok(StakingConfig { desired_validators: block_details.desired_targets, max_nominations, min_nominator_bond, min_validator_bond: min_validator_bond })
 }
 
-// Multi-phase snapshot - TODO remove when not neded
-// pub async fn get_snapshot_data<C: RpcClient>(client: &RawClient<C>, block: Option<H256>) -> Result<(ElectionSnapshot, StakingConfig), Box<dyn std::error::Error>> {
-//     let snapshot = client.get_snapshot(block)
-//         .await?;
-//     let staking_config = get_staking_config(client, block).await?;
-//     if snapshot.is_some() {
-//         return Ok((snapshot.unwrap(), staking_config));
-//     }
-//     info!("No snapshot found, getting validators and nominators from staking storage");
-//     // TODO check if nominators include validators self-stake as nominations in snapshot
-//     let mut validators = client.get_validators(block).await?;
-//     let nominators = client.get_nominators(block).await?;
-    
-//     let min_bond = staking_config.min_nominator_bond;
-    
-//     let nominator_futures: Vec<_> = nominators.into_iter().map(|nominator| async move {
-//         let nominations = client.get_nominator(nominator.clone(), block).await
-//             .map_err(|e| e.to_string())?;
-//         if nominations.is_none() {
-//             return Ok::<Option<StorageVoterData>, String>(None);
-//         }
-//         let nominations = nominations.unwrap();
-//         if nominations.suppressed {
-//             return Ok(None);
-//         }
-//         let stake = client.ledger(nominator.clone(), block).await
-//             .map_err(|e| e.to_string())?;
-//         if stake.is_none() {
-//             return Ok(None);
-//         }
-//         let stake = stake.unwrap();
-//         let stake_amount = stake.active;
-//         if stake_amount < min_bond {
-//             return Ok(None);
-//         }
-//         let targets = nominations.targets.clone();
-//         let vote_weight = stake_amount as u64;
-//         Ok(Some((nominator, vote_weight, targets)))
-//     }).collect();
-    
-//     let voters = join_all(nominator_futures)
-//         .await
-//         .into_iter()
-//         .collect::<Result<Vec<_>, _>>()
-//         .map_err(|e: String| e)?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockall::mock;
+    use pallet_staking::ValidatorPrefs;
+    use crate::miner_config::polkadot::MinerConfig as PolkadotMinerConfig;
+    use crate::miner_config::kusama::MinerConfig as KusamaMinerConfig;
+    use crate::miner_config::substrate::MinerConfig as SubstrateMinerConfig;
+    use crate::models::Chain;
+    use crate::multi_block_state_client::{StorageTrait, Phase};
+    use crate::primitives::{Hash, Storage};
+    use crate::raw_state_client::{NominationsLight, StakingLedger};
+    use crate::miner_config::{MinerConstants, set_runtime_constants};
 
-//     let voters: Vec<StorageVoterData> = voters.into_iter().filter_map(|x| x).collect();
-
-//     // Filter validators by min validator bond if > 0 requesting for ledger
-//     let min_validator_bond = staking_config.min_validator_bond;
+    mock! {
+        pub MultiBlockClient<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static> {}
     
-//     if min_validator_bond > 0 {
-//         let validators_futures: Vec<_> = validators.into_iter().map(|validator| async move {
-//             let ledger = client.ledger(validator.clone(), block).await
-//                 .map_err(|e| e.to_string())?;
-//             if ledger.is_none() {
-//                 return Ok(None);
-//             }
-//             let ledger = ledger.unwrap();
-//             if ledger.active < min_validator_bond {
-//                 return Ok(None);
-//             }
-//             Ok(Some(validator))
-//         }).collect();
-//         let collected_validators = join_all(validators_futures)
-//             .await
-//             .into_iter()
-//             .collect::<Result<Vec<_>, _>>()
-//             .map_err(|e: String| e)?;
-//         validators = collected_validators.into_iter().filter_map(|x| x).collect();
-//     }
+        #[async_trait::async_trait]
+        impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static> MultiBlockClientTrait<C, MC> for MultiBlockClient<C, MC> {
+            async fn get_storage<S: StorageTrait + From<Storage> + 'static>(&self, block: Option<Hash>) -> Result<S, Box<dyn std::error::Error>>;
+            async fn get_block_details<S: StorageTrait + From<Storage> + 'static>(&self, block: Option<Hash>) -> Result<BlockDetails<S>, Box<dyn std::error::Error>>;
+            async fn get_phase<S: StorageTrait + 'static>(&self, storage: &S) -> Result<Phase, Box<dyn std::error::Error>>;
+            async fn get_round<S: StorageTrait + 'static>(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error>>;
+            async fn get_desired_targets<S: StorageTrait + 'static>(&self, storage: &S, round: u32) -> Result<u32, Box<dyn std::error::Error>>;
+            async fn get_block_number<S: StorageTrait + 'static>(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error>>;
+            async fn get_min_nominator_bond<S: StorageTrait + 'static>(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error>> where S: Send + Sync + 'static;
+            async fn get_min_validator_bond<S: StorageTrait + 'static>(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error>>;
+            async fn fetch_paged_voter_snapshot<S: StorageTrait + 'static>(&self, storage: &S, round: u32, page: u32) -> Result<VoterSnapshotPage<MC>, Box<dyn std::error::Error>> where S: Send + Sync + 'static;
+            async fn fetch_paged_target_snapshot<S: StorageTrait + 'static>(&self, storage: &S, round: u32, page: u32) -> Result<TargetSnapshotPage<MC>, Box<dyn std::error::Error>>;
+            async fn get_validator_prefs<S: StorageTrait + 'static>(&self, storage: &S, validator: AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error>>;
+            async fn get_nominator<S: StorageTrait + 'static>(&self, storage: &S, nominator: AccountId) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error>>;
+            async fn get_controller_from_stash<S: StorageTrait + 'static>(&self, storage: &S, stash: AccountId) -> Result<Option<AccountId>, Box<dyn std::error::Error>>;
+            async fn ledger<S: StorageTrait + 'static>(&self, storage: &S, account: AccountId) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>>;
+        }
+    }
+    use subxt::utils::Yes;
+    use subxt::storage::Address;
+    mock! {
+        #[derive(Debug, Clone)]
+        pub DummyStorage {}
+        
+        #[async_trait::async_trait]
+        impl StorageTrait for DummyStorage {
+            async fn fetch<Addr>(
+                &self,
+                address: &Addr,
+            ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error>>
+            where
+                Addr: Address<IsFetchable = Yes> + Sync + 'static;
 
-//     Ok((ElectionSnapshot {
-//         voters: voters,
-//         targets: validators,
-//     }, staking_config))
-// }
+            async fn fetch_or_default<Addr>(
+                &self,
+                address: &Addr,
+            ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error>>
+            where
+                Addr: Address<IsFetchable = Yes, IsDefaultable = Yes> + Sync + 'static;
+        }
+    }
 
-// pub async fn get_staking_config<C: RpcClient>(client: &RawClient<C>, block: Option<H256>) -> Result<StakingConfig, Box<dyn std::error::Error>> {
-//     let desired_validators = client.get_validator_count(block)
-//         .await
-//         .map_err(|e| format!("Error getting validator count: {}", e))?;
-//     let max_nominations = client.get_max_nominations(block)
-//         .await
-//         .map_err(|e| format!("Error getting max nominations: {}", e))?;
-//     let min_nominator_bond = client.get_min_nominator_bond(block)
-//         .await
-//         .map_err(|e| format!("Error getting min nominator bond: {}", e))?
-//         .unwrap_or(0);
-//     let min_validator_bond = client.get_min_validator_bond(block)
-//         .await
-//         .map_err(|e| format!("Error getting min validator bond: {}", e))?
-//         .unwrap_or(0);
-//     Ok(StakingConfig {
-//         desired_validators,
-//         max_nominations,
-//         min_nominator_bond,
-//         min_validator_bond,
-//     })
-// }
+    mock! {
+        #[derive(Debug, Clone)]
+        pub DummyChainClient {} 
+
+        #[async_trait::async_trait]
+        impl ChainClientTrait for DummyChainClient {
+            async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error>>;
+
+            async fn fetch_constant<T: serde::de::DeserializeOwned>(
+                &self,
+                pallet: &str,
+                constant_name: &str,
+            ) -> Result<T, Box<dyn std::error::Error>>
+            where
+                T: 'static;
+        }
+    }
+
+
+    #[tokio::test]
+    async fn test_get_staking_config() {
+        let mut mock_client = MockMultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig>::new();
+
+        mock_client
+            .expect_get_min_nominator_bond()
+            .returning(|_storage: &MockDummyStorage| Ok(100));
+
+        mock_client
+            .expect_get_min_validator_bond()
+            .returning(|_storage: &MockDummyStorage| Ok(200));
+
+        let result = get_staking_config_from_multi_block(&mock_client, &BlockDetails::<MockDummyStorage> {
+            block_hash: Some(Hash::zero()),
+            phase: Phase::Snapshot(0),
+            round: 1,
+            n_pages: 1,
+            desired_targets: 10,
+            storage: MockDummyStorage::new(),
+            _block_number: 100,
+        }).await;
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.min_nominator_bond, 100);
+        assert_eq!(config.min_validator_bond, 200);
+        assert_eq!(config.desired_validators, 10);
+        assert_eq!(config.max_nominations, 16);
+    }
+
+
+}

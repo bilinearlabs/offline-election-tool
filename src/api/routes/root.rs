@@ -17,6 +17,7 @@ where
     <T as MinerConfig>::VoterSnapshotPerBlock: Send,
     <T as MinerConfig>::Pages: Send,
     <T as MinerConfig>::MaxVotesPerVoter: Send,
+    T: Send + Sync + 'static,
 {
     pub raw_state_client: Arc<RawClient<WsClient>>,
     pub multi_block_state_client: Arc<MultiBlockClient<Client, T>>,
@@ -31,6 +32,7 @@ where
     T::Pages: Send,
     T::MaxVotesPerVoter: Send,
     T::MaxBackersPerWinner: Send,
+    T: Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {

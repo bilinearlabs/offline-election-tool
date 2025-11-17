@@ -109,8 +109,13 @@ static ELECTION_CONFIG_FALLBACK: Mutex<ElectionConfig> = Mutex::new(ElectionConf
 });
 
 /// Set the runtime miner constants (should be called once at startup)
-pub fn set_runtime_constants(constants: MinerConstants) {
+pub fn set_runtime_constants(chain: Chain, constants: MinerConstants) {
 	RUNTIME_CONFIG.set(constants).expect("Runtime constants already set");
+	set_max_votes_per_voter(match chain {
+		Chain::Polkadot => 16,
+		Chain::Kusama => 24,
+		Chain::Substrate => 16,
+	});
 }
 
 /// Set election algorithm, balancing iterations, and max nominations from args
@@ -131,6 +136,14 @@ pub fn set_election_config(chain: Chain, algorithm: Algorithm, iterations: usize
 	*ELECTION_CONFIG_FALLBACK.lock().unwrap() = ElectionConfig {
 		algorithm,
 		iterations,
+		max_votes_per_voter,
+	};
+}
+
+fn set_max_votes_per_voter(max_votes_per_voter: u32) {
+	*ELECTION_CONFIG_FALLBACK.lock().unwrap() = ElectionConfig {
+		algorithm: Algorithm::SeqPhragmen,
+		iterations: 0,
 		max_votes_per_voter,
 	};
 }

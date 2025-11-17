@@ -8,7 +8,8 @@ use std::sync::Arc;
 use jsonrpsee_ws_client::WsClient;
 use crate::api::routes::root;
 use crate::models::{Chain, Algorithm};
-use crate::multi_block_state_client::MultiBlockClient;
+use crate::multi_block_state_client::{MultiBlockClient, MultiBlockClientTrait};
+use crate::primitives::Storage;
 use crate::subxt_client::Client;
 
 mod raw_state_client;
@@ -162,7 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     
     // Set runtime constants
-    miner_config::set_runtime_constants(miner_constants.clone());
+    miner_config::set_runtime_constants(chain, miner_constants.clone());
 
     match args.action {
         Action::Simulate(simulate_args) => {
@@ -194,7 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             let election_result = with_miner_config!(chain, {
                 let multi_block_client = MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone());
-                let storage = multi_block_client.get_storage(block).await?;
+                let storage = multi_block_client.get_storage::<Storage>(block).await?;
                 // print phase
                 let phase = multi_block_client.get_phase(&storage).await?;
                 info!("Phase: {:?}", phase);
