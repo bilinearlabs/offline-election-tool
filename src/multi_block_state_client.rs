@@ -1,3 +1,5 @@
+use subxt::utils::Yes;
+use subxt::storage::Address;
 use crate::{primitives::Storage, subxt_client::Client};
 use crate::raw_state_client::{NominationsLight, StakingLedger};
 use pallet_staking::ValidatorPrefs;
@@ -21,7 +23,9 @@ pub trait ChainClientTrait: Send + Sync {
         &self,
         pallet: &str,
         constant_name: &str,
-    ) -> Result<T, Box<dyn std::error::Error>>;
+    ) -> Result<T, Box<dyn std::error::Error>>
+    where
+        T: 'static;
 }
 
 // Implementation of ChainClientTrait for Client
@@ -42,6 +46,49 @@ impl ChainClientTrait for Client {
     ) -> Result<T, Box<dyn std::error::Error>> {
         // Call the inherent method on Client using fully qualified syntax to avoid recursion
         crate::subxt_client::Client::fetch_constant(self, pallet, constant_name).await
+    }
+}
+
+// Trait to abstract over storage access so we can mock it in tests
+#[async_trait::async_trait]
+pub trait StorageTrait: Send + Sync {
+    async fn fetch<Addr>(
+        &self,
+        address: &Addr,
+    ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error>>
+    where
+        Addr: Address<IsFetchable = Yes> + Sync + 'static;
+
+    async fn fetch_or_default<Addr>(
+        &self,
+        address: &Addr,
+    ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error>>
+    where
+        Addr: Address<IsFetchable = Yes, IsDefaultable = Yes> + Sync + 'static;
+}
+
+#[async_trait::async_trait]
+impl StorageTrait for Storage {
+    async fn fetch<Addr>(
+        &self,
+        address: &Addr,
+    ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error>>
+    where
+        Addr: Address<IsFetchable = Yes> + Sync + 'static,
+    {
+        let val = Storage::fetch(self, address).await?;
+        Ok(val)
+    }
+
+    async fn fetch_or_default<Addr>(
+        &self,
+        address: &Addr,
+    ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error>>
+    where
+        Addr: Address<IsFetchable = Yes, IsDefaultable = Yes> + Sync + 'static,
+    {
+        let val = Storage::fetch_or_default(self, address).await?;
+        Ok(val)
     }
 }
 
@@ -147,21 +194,21 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
 		})
     }
 
-    pub async fn get_phase(&self, storage: &Storage) -> Result<Phase, Box<dyn std::error::Error>> {
+    pub async fn get_phase<S: StorageTrait>(&self, storage: &S) -> Result<Phase, Box<dyn std::error::Error>> {
         let phase_key = subxt::dynamic::storage("MultiBlockElection", "CurrentPhase", vec![]);
         let phase = storage.fetch_or_default(&phase_key).await?;
         let phase: Phase = codec::Decode::decode(&mut phase.encoded())?;
         Ok(phase)
     }
 
-    pub async fn get_round(&self, storage: &Storage) -> Result<u32, Box<dyn std::error::Error>> {
+    pub async fn get_round<S: StorageTrait>(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error>> {
         let storage_key = subxt::dynamic::storage("MultiBlockElection", "Round", vec![]);
         let round = storage.fetch_or_default(&storage_key).await?;
         let round: u32 = codec::Decode::decode(&mut round.encoded())?;
         Ok(round)
     }
 
-    pub async fn get_desired_targets(&self, storage: &Storage, round: u32) -> Result<u32, Box<dyn std::error::Error>> {
+    pub async fn get_desired_targets<S: StorageTrait>(&self, storage: &S, round: u32) -> Result<u32, Box<dyn std::error::Error>> {
         let storage_key = subxt::dynamic::storage(
             "MultiBlockElection",
             "DesiredTargets",
@@ -175,7 +222,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         Ok(desired_targets)
     }
 
-    pub async fn get_block_number(&self, storage: &Storage) -> Result<u32, Box<dyn std::error::Error>> {
+    pub async fn get_block_number<S: StorageTrait>(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error>> {
         let storage_key = subxt::dynamic::storage("System", "Number", vec![]);
         let block_number_entry = storage.fetch(&storage_key)
             .await?
@@ -184,7 +231,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         Ok(block_number)
     }
 
-    pub async fn get_min_nominator_bond(&self, storage: &Storage) -> Result<u128, Box<dyn std::error::Error>> {
+    pub async fn get_min_nominator_bond<S: StorageTrait>(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error>> {
         let storage_key = subxt::dynamic::storage("Staking", "MinNominatorBond", vec![]);
         let min_nominator_bond_entry = storage.fetch(&storage_key)
             .await?
@@ -193,7 +240,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         Ok(min_nominator_bond)
     }
 
-    pub async fn get_min_validator_bond(&self, storage: &Storage) -> Result<u128, Box<dyn std::error::Error>> {
+    pub async fn get_min_validator_bond<S: StorageTrait>(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error>> {
         let storage_key = subxt::dynamic::storage("Staking", "MinValidatorBond", vec![]);
         let min_validator_bond_entry = storage.fetch(&storage_key)
             .await?
@@ -202,7 +249,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         Ok(min_validator_bond)
     }
 
-    pub async fn fetch_paged_voter_snapshot(&self, storage: &Storage, round: u32, page: u32) -> Result<VoterSnapshotPage<MC>, Box<dyn std::error::Error>> {
+    pub async fn fetch_paged_voter_snapshot<S: StorageTrait>(&self, storage: &S, round: u32, page: u32) -> Result<VoterSnapshotPage<MC>, Box<dyn std::error::Error>> {
         let storage_key = subxt::dynamic::storage(
             "MultiBlockElection",
             "PagedVoterSnapshot",
@@ -217,7 +264,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         Ok(voter_snapshot)
     }
 
-    pub async fn fetch_paged_target_snapshot(&self, storage: &Storage, round: u32, page: u32) -> Result<TargetSnapshotPage<MC>, Box<dyn std::error::Error>> {
+    pub async fn fetch_paged_target_snapshot<S: StorageTrait>(&self, storage: &S, round: u32, page: u32) -> Result<TargetSnapshotPage<MC>, Box<dyn std::error::Error>> {
         let storage_key = subxt::dynamic::storage(
             "MultiBlockElection",
             "PagedTargetSnapshot",
@@ -230,7 +277,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         Ok(target_snapshot)
     }
     
-    pub async fn get_validator_prefs(&self, storage: &Storage, validator: AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error>> {
+    pub async fn get_validator_prefs<S: StorageTrait>(&self, storage: &S, validator: AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error>> {
         let encoded_validator = validator.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Validators", vec![scale_value::Value::from(encoded_validator)]);
         let validator_prefs_entry = storage.fetch(&storage_key)
@@ -240,7 +287,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         Ok(validator_prefs)
     }
 
-    pub async fn get_nominator(&self, storage: &Storage, nominator: AccountId) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error>> {
+    pub async fn get_nominator<S: StorageTrait>(&self, storage: &S, nominator: AccountId) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error>> {
         let encoded_nominator = nominator.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Nominators", vec![scale_value::Value::from(encoded_nominator)]);
         match storage.fetch(&storage_key).await? {
@@ -253,7 +300,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
     }
 
     // Get controller account for a given stash account
-    pub async fn get_controller_from_stash(&self, storage: &Storage, stash: AccountId) -> Result<Option<AccountId>, Box<dyn std::error::Error>> {
+    pub async fn get_controller_from_stash<S: StorageTrait>(&self, storage: &S, stash: AccountId) -> Result<Option<AccountId>, Box<dyn std::error::Error>> {
         let encoded_stash = stash.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Bonded", vec![scale_value::Value::from(encoded_stash)]);
         match storage.fetch(&storage_key).await? {
@@ -265,7 +312,7 @@ impl<C: ChainClientTrait, MC: MinerConfig> MultiBlockClient<C, MC> {
         }
     }
 
-    pub async fn ledger(&self, storage: &Storage, account: AccountId) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>> {
+    pub async fn ledger<S: StorageTrait>(&self, storage: &S, account: AccountId) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>> {
         let encoded_account = account.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Ledger", vec![scale_value::Value::from(encoded_account)]);
         match storage.fetch(&storage_key).await? {
@@ -289,4 +336,342 @@ pub struct BlockDetails {
 	pub desired_targets: u32,
 	pub _block_number: u32,
 	pub block_hash: Option<Hash>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockall::mock;
+    use mockall::predicate::*;
+    use sp_runtime::Perbill;
+    use subxt::dynamic::DecodedValueThunk;
+    use subxt::metadata::{DecodeWithMetadata};
+
+    mock! {
+        #[derive(Debug, Clone)]
+        pub DummyChainClient {} 
+
+        #[async_trait::async_trait]
+        impl ChainClientTrait for DummyChainClient {
+            async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error>>;
+
+            async fn fetch_constant<T: serde::de::DeserializeOwned>(
+                &self,
+                pallet: &str,
+                constant_name: &str,
+            ) -> Result<T, Box<dyn std::error::Error>>
+            where
+                T: 'static;
+        }
+    }
+
+    mock! {
+        #[derive(Debug, Clone)]
+        pub DummyStorage {}
+
+        #[async_trait::async_trait]
+        impl StorageTrait for DummyStorage {
+            async fn fetch<Addr>(
+                &self,
+                address: &Addr,
+            ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error>>
+            where
+                Addr: Address<IsFetchable = Yes> + Sync + 'static;
+
+            async fn fetch_or_default<Addr>(
+                &self,
+                address: &Addr,
+            ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error>>
+            where
+                Addr: Address<IsFetchable = Yes, IsDefaultable = Yes> + Sync + 'static;
+        }
+    }
+
+    pub fn fake_value_thunk_from<T: codec::Encode>(val: T) -> DecodedValueThunk {
+        let metadata = dummy_metadata();
+        let type_id = 0;
+    
+        let bytes = val.encode();
+        let mut slice: &[u8] = &bytes;
+    
+        DecodedValueThunk::decode_with_metadata(&mut slice, type_id, &metadata).unwrap()
+    }
+    
+    pub fn dummy_metadata() -> subxt::Metadata {
+        let bytes = include_bytes!("../metadata/multi_block.scale");
+        let mut slice: &[u8] = bytes;
+        subxt::Metadata::decode(&mut slice).unwrap()
+    }
+
+    use crate::miner_config::{MinerConstants, set_runtime_constants};
+    use crate::miner_config::polkadot::MinerConfig as PolkadotMinerConfig;
+    use crate::primitives::Balance;
+    use crate::raw_state_client::UnlockChunk;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    pub fn initialize_runtime_constants() {
+        INIT.call_once(|| {
+            set_runtime_constants(MinerConstants {
+                pages: 10,
+                max_winners_per_page: 10,
+                max_backers_per_winner: 10,
+                voter_snapshot_per_block: 10,
+                target_snapshot_per_block: 10,
+                max_length: 10,
+            });
+        });
+    }
+
+    #[tokio::test]
+    async fn test_get_phase() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let address = subxt::dynamic::storage("MultiBlockElection", "CurrentPhase", vec![]);
+        dummy_storage
+            .expect_fetch_or_default()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let phase = Phase::Signed(10);
+                let value = fake_value_thunk_from(phase);
+                Ok(value)
+            });
+        let chain_client = MockDummyChainClient::new();
+        let client = MultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig> {client:chain_client, _phantom: PhantomData };
+        let phase = client.get_phase(&dummy_storage).await;
+        assert_eq!(phase.unwrap(), Phase::Signed(10));
+    }
+
+    #[tokio::test]
+    async fn test_get_round() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let address = subxt::dynamic::storage("MultiBlockElection", "Round", vec![]);
+        dummy_storage
+            .expect_fetch_or_default()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let round = 10;
+                let value = fake_value_thunk_from(round);
+                Ok(value)
+            });
+        let chain_client = MockDummyChainClient::new();
+        let client = MultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig> {client:chain_client, _phantom: PhantomData };
+        let round = client.get_round(&dummy_storage).await;
+        assert_eq!(round.unwrap(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_get_desired_targets() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let round = 10;
+        let address = subxt::dynamic::storage("MultiBlockElection", "DesiredTargets", vec![Value::from(round)]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let desired_targets = 10;
+                let value = fake_value_thunk_from(desired_targets);
+                Ok(Some(value))
+            });
+        let chain_client = MockDummyChainClient::new();
+        let client = MultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig> {client:chain_client, _phantom: PhantomData };
+        let desired_targets = client.get_desired_targets(&dummy_storage, round).await;
+        assert_eq!(desired_targets.unwrap(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_get_block_number() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let address = subxt::dynamic::storage("System", "Number", vec![]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let block_number = 10;
+                let value = fake_value_thunk_from(block_number);
+                Ok(Some(value))
+            });
+        let chain_client = MockDummyChainClient::new();
+        let client = MultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig> {client:chain_client, _phantom: PhantomData };
+        let block_number = client.get_block_number(&dummy_storage).await;
+        assert_eq!(block_number.unwrap(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_get_min_nominator_bond() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let address = subxt::dynamic::storage("Staking", "MinNominatorBond", vec![]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let min_nominator_bond: u128 = 10;
+                let value = fake_value_thunk_from(min_nominator_bond);
+                Ok(Some(value))
+            });
+        let chain_client = MockDummyChainClient::new();
+        let client = MultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig> {client:chain_client, _phantom: PhantomData };
+        let min_nominator_bond = client.get_min_nominator_bond(&dummy_storage).await;
+        assert_eq!(min_nominator_bond.unwrap(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_get_min_validator_bond() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let address = subxt::dynamic::storage("Staking", "MinValidatorBond", vec![]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let min_validator_bond: u128 = 10;
+                let value = fake_value_thunk_from(min_validator_bond);
+                Ok(Some(value))
+            });
+        let chain_client = MockDummyChainClient::new();
+        let client = MultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig> {client:chain_client, _phantom: PhantomData };
+        let min_validator_bond = client.get_min_validator_bond(&dummy_storage).await;
+        assert_eq!(min_validator_bond.unwrap(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_paged_voter_snapshot() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let round = 10;
+        let page = 1;
+        let address = subxt::dynamic::storage("MultiBlockElection", "PagedVoterSnapshot", vec![Value::from(round), Value::from(page)]);
+        initialize_runtime_constants();
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let voter_snapshot: BoundedVec::<VoterData<PolkadotMinerConfig>, <PolkadotMinerConfig as MinerConfig>::VoterSnapshotPerBlock> = BoundedVec::new();
+                let value = fake_value_thunk_from(voter_snapshot);
+                Ok(Some(value))
+            });
+        let chain_client = MockDummyChainClient::new();
+        let client = MultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig> {client:chain_client, _phantom: PhantomData };
+        let voter_snapshot = client.fetch_paged_voter_snapshot(&dummy_storage, round, page).await;
+        assert_eq!(voter_snapshot.unwrap(), BoundedVec::<VoterData<PolkadotMinerConfig>, <PolkadotMinerConfig as MinerConfig>::VoterSnapshotPerBlock>::new());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_paged_target_snapshot() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let round = 10;
+        let page = 1;
+        let address = subxt::dynamic::storage("MultiBlockElection", "PagedTargetSnapshot", vec![Value::from(round), Value::from(page)]);
+        initialize_runtime_constants();
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let target_snapshot: BoundedVec::<AccountId, <PolkadotMinerConfig as MinerConfig>::TargetSnapshotPerBlock> = BoundedVec::new();
+                let value = fake_value_thunk_from(target_snapshot);
+                Ok(Some(value))
+            });
+        let chain_client = MockDummyChainClient::new();
+        let client = MultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig> {client:chain_client, _phantom: PhantomData };
+        let target_snapshot = client.fetch_paged_target_snapshot(&dummy_storage, round, page).await;
+        assert_eq!(target_snapshot.unwrap(), BoundedVec::<AccountId, <PolkadotMinerConfig as MinerConfig>::TargetSnapshotPerBlock>::new());
+    }
+
+    #[tokio::test]
+    async fn test_get_validator_prefs() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let validator = AccountId::new([0; 32]);
+        let address = subxt::dynamic::storage("Staking", "Validators", vec![scale_value::Value::from(validator.encode())]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let validator_prefs = ValidatorPrefs {
+                    commission: Perbill::from_parts(10),
+                    blocked: false,
+                };
+                let value = fake_value_thunk_from(validator_prefs);
+                Ok(Some(value))
+            });
+        let chain_client = MockDummyChainClient::new();
+        let client = MultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig> {client:chain_client, _phantom: PhantomData };
+        let validator_prefs = client.get_validator_prefs(&dummy_storage, validator).await;
+        assert_eq!(validator_prefs.unwrap(), ValidatorPrefs {
+            commission: Perbill::from_parts(10),
+            blocked: false,
+        });
+    }
+
+    #[tokio::test]
+    async fn test_get_nominator() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let nominator = AccountId::new([0; 32]);
+        let address = subxt::dynamic::storage("Staking", "Nominators", vec![scale_value::Value::from(nominator.encode())]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let nominator = NominationsLight {
+                    targets: vec![AccountId::new([0; 32])],
+                    _submitted_in: 10,
+                    suppressed: false,
+                };
+                let value = fake_value_thunk_from(nominator);
+                Ok(Some(value))
+            });
+        let chain_client = MockDummyChainClient::new();
+        let client = MultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig> {client:chain_client, _phantom: PhantomData };
+        let nominator = client.get_nominator(&dummy_storage, nominator).await;
+        let nominator = nominator.unwrap().unwrap();
+        assert_eq!(nominator.targets, vec![AccountId::new([0; 32])]);
+        assert_eq!(nominator._submitted_in, 10);
+        assert_eq!(nominator.suppressed, false);
+    }
+
+    #[tokio::test]
+    async fn test_get_controller_from_stash() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let stash = AccountId::new([0; 32]);
+        let address = subxt::dynamic::storage("Staking", "Bonded", vec![scale_value::Value::from(stash.encode())]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let controller = AccountId::new([0; 32]);
+                let value = fake_value_thunk_from(controller);
+                Ok(Some(value))
+            });
+        let chain_client = MockDummyChainClient::new();
+        let client = MultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig> {client:chain_client, _phantom: PhantomData };
+        let controller = client.get_controller_from_stash(&dummy_storage, stash).await;
+        assert_eq!(controller.unwrap().unwrap(), AccountId::new([0; 32]));
+    }
+
+    #[tokio::test]
+    async fn test_ledger() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let account = AccountId::new([0; 32]);
+        let address = subxt::dynamic::storage("Staking", "Ledger", vec![scale_value::Value::from(account.encode())]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let ledger = StakingLedger {
+                    stash: AccountId::new([0; 32]),
+                    total: 10,
+                    active: 10,
+                    unlocking: Vec::new()
+                };
+                let value = fake_value_thunk_from(ledger);
+                Ok(Some(value))
+            });
+        let chain_client = MockDummyChainClient::new();
+        let client = MultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig> {client:chain_client, _phantom: PhantomData };
+        let ledger = client.ledger(&dummy_storage, account).await;
+        let ledger = ledger.unwrap().unwrap();
+        assert_eq!(ledger.stash, AccountId::new([0; 32]));
+        assert_eq!(ledger.total, 10);
+        assert_eq!(ledger.active, 10);
+        let unlocking: Vec<UnlockChunk<Balance>> = Vec::new();
+        assert_eq!(ledger.unlocking, unlocking);
+    }
+
 }

@@ -1,12 +1,11 @@
 use std::collections::BTreeMap;
 
-use frame_election_provider_support::BoundedSupport;
 use pallet_staking::ValidatorPrefs;
 use serde::{Serialize, Deserialize};
 use sp_core::{crypto::Ss58Codec, Get, H256};
 use sp_npos_elections::Support;
 use pallet_election_provider_multi_block::{
-    PagedRawSolution, unsigned::miner::{BaseMiner, MineInput}, verifier::feasibility_check_page_inner_with_snapshot
+    PagedRawSolution, unsigned::miner::{BaseMiner, MineInput}
 };
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use futures::future::join_all;

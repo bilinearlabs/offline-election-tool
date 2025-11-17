@@ -16,7 +16,7 @@ use sp_version::RuntimeVersion;
 use crate::primitives::{AccountId, EraIndex};
 
 
-#[derive(Debug, Clone, Decode, Encode)]
+#[derive(Debug, Clone, Decode, Encode, PartialEq)]
 pub struct UnlockChunk<Balance> {
     #[codec(compact)]
     pub value: Balance,
@@ -34,7 +34,7 @@ pub struct StakingLedger {
     pub unlocking: Vec<UnlockChunk<u128>>,
 }
 
-#[derive(Debug, Clone, Decode)]
+#[derive(Debug, Clone, Decode, Encode)]
 pub struct NominationsLight<AccountId> {
     pub targets: Vec<AccountId>,
     pub _submitted_in: EraIndex,
@@ -245,7 +245,6 @@ mod tests {
     use mockall::predicate::*;
     use serde_json::Value;
     use sp_core::storage::StorageData;
-    use sp_runtime::Perbill;
 
     // Mock the RpcClient trait
     mock! {
