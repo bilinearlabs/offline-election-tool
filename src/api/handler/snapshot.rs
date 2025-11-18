@@ -1,11 +1,12 @@
 use axum::{
     extract::{Query, State}, http::StatusCode, response::Json
 };
+
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::{
-    api::{error::AppError, routes::root::AppState, utils}, primitives::AccountId, snapshot,
+    api::{error::AppError, routes::root::AppState, utils}, primitives::{AccountId}, snapshot,
 };
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 

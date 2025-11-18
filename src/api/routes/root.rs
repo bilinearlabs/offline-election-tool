@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use crate::{models::Chain, multi_block_state_client::MultiBlockClient, primitives::AccountId, raw_state_client::{RawClient}, subxt_client::Client};
+use crate::{models::Chain, multi_block_state_client::MultiBlockClient, primitives::{AccountId, Storage}, raw_state_client::RawClient, subxt_client::Client};
 use jsonrpsee_ws_client::WsClient;
 use axum::{
     Router,
@@ -20,7 +20,7 @@ where
     T: Send + Sync + 'static,
 {
     pub raw_state_client: Arc<RawClient<WsClient>>,
-    pub multi_block_state_client: Arc<MultiBlockClient<Client, T>>,
+    pub multi_block_state_client: Arc<MultiBlockClient<Client, T, Storage>>,
     pub chain: Chain,
 }
 
@@ -43,7 +43,7 @@ where
     }
 }
 
-pub fn routes<T: MinerConfig + Send + Sync + Clone + 'static>(raw_state_client: Arc<RawClient<WsClient>>, multi_block_state_client: Arc<MultiBlockClient<Client, T>>, chain: Chain) -> IntoMakeService<Router>
+pub fn routes<T: MinerConfig + Send + Sync + Clone + 'static>(raw_state_client: Arc<RawClient<WsClient>>, multi_block_state_client: Arc<MultiBlockClient<Client, T, Storage>>, chain: Chain) -> IntoMakeService<Router>
 where
     T: MinerConfig<AccountId = AccountId> + Send,
     T::TargetSnapshotPerBlock: Send,

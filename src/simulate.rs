@@ -12,7 +12,7 @@ use futures::future::join_all;
 use sp_runtime::Perbill;
 use tracing::info;
 use frame_support::BoundedVec;
-use crate::{multi_block_state_client::{MultiBlockClientTrait, VoterData, VoterSnapshotPage}, primitives::Storage};
+use crate::{multi_block_state_client::{MultiBlockClientTrait, StorageTrait, VoterData, VoterSnapshotPage}, primitives::Storage};
 
 use crate::{
     models::{Validator, ValidatorNomination}, multi_block_state_client::{ChainClientTrait, MultiBlockClient}, primitives::AccountId, raw_state_client::{RawClient, RpcClient}, snapshot
@@ -31,9 +31,9 @@ pub struct Override {
     pub candidates_remove: Vec<String>,
 }
 
-pub async fn simulate<C: RpcClient, SC: ChainClientTrait, MC: MinerConfig>(
+pub async fn simulate<C: RpcClient, SC: ChainClientTrait, MC: MinerConfig, S: StorageTrait + From<Storage> + Clone + 'static>(
     raw_state_client: &RawClient<C>,
-    multi_block_state_client: &MultiBlockClient<SC, MC>,
+    multi_block_state_client: &MultiBlockClient<SC, MC, S>,
     at: Option<H256>,
     desired_validators: Option<u32>,
     apply_reduce: bool,
@@ -52,7 +52,7 @@ where
     <MC as MinerConfig>::Solution: Send,
     MC: Send + Sync + 'static,
 {
-    let block_details = multi_block_state_client.get_block_details::<Storage>(at).await?;
+    let block_details = multi_block_state_client.get_block_details(at).await?;
     info!("Fetching snapshot data for election...");
     let (mut snapshot, staking_config) = snapshot::get_snapshot_data_from_multi_block(multi_block_state_client, raw_state_client, &block_details).await?;
 

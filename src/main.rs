@@ -5,12 +5,11 @@ use sp_core::crypto::set_default_ss58_version;
 use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
-use jsonrpsee_ws_client::WsClient;
 use crate::api::routes::root;
 use crate::models::{Chain, Algorithm};
 use crate::multi_block_state_client::{MultiBlockClient, MultiBlockClientTrait};
 use crate::primitives::Storage;
-use crate::raw_state_client::{RawClient, RawClientTrait};
+use crate::raw_state_client::{RawClientTrait};
 use crate::subxt_client::Client;
 
 mod raw_state_client;
@@ -195,13 +194,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let min_validator_bond = simulate_args.min_validator_bond;
             
             let election_result = with_miner_config!(chain, {
-                let multi_block_client = MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone());
-                let storage = multi_block_client.get_storage::<Storage>(block).await?;
+                let multi_block_client = MultiBlockClient::<Client, MinerConfig, Storage>::new(subxt_client.clone());
+                let storage = multi_block_client.get_storage(block).await?;
                 // print phase
                 let phase = multi_block_client.get_phase(&storage).await?;
                 info!("Phase: {:?}", phase);
                 
-                simulate::simulate::<_, Client, MinerConfig>(
+                simulate::simulate(
                     &raw_client,
                     &multi_block_client,
                     block,
@@ -226,8 +225,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             info!("Taking snapshot...");
             let snapshot = with_miner_config!(chain, {
-                let multi_block_client = MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone());
-                snapshot::build::<WsClient, Client, MinerConfig, MultiBlockClient<Client, MinerConfig>, RawClient<WsClient>>(&multi_block_client, &raw_client, block).await
+                let multi_block_client = MultiBlockClient::<Client, MinerConfig, Storage>::new(subxt_client.clone());
+                snapshot::build(&multi_block_client, &raw_client, block).await
             });
             if snapshot.is_err() {
                 return Err(format!("Error generating snapshot -> {}", snapshot.err().unwrap()).into());
@@ -240,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let storage_client = Arc::new(raw_client);
             let listener = tokio::net::TcpListener::bind(address).await?;
             with_miner_config!(chain, {
-                let multi_block_client = Arc::new(MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone()));
+                let multi_block_client = Arc::new(MultiBlockClient::<Client, MinerConfig, Storage>::new(subxt_client.clone()));
                 let router = root::routes::<MinerConfig>(storage_client, multi_block_client, chain);
                 axum::serve(listener, router)
                     .await

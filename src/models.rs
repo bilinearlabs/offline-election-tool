@@ -43,7 +43,7 @@ pub struct Validator {
     pub nominations: Vec<ValidatorNomination>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub struct StakingConfig {
     pub desired_validators: u32,
     pub max_nominations: u32,
@@ -51,14 +51,14 @@ pub struct StakingConfig {
     pub min_validator_bond: u128,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub struct SnapshotValidator {
     pub stash: String,
     pub commission: f64,
     pub blocked: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub struct SnapshotNominator {
     pub stash: String,
     pub stake: Balance,
