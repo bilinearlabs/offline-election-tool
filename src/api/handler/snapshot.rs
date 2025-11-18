@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::{
-    api::{error::AppError, routes::root::AppState, utils}, primitives::AccountId, snapshot
+    api::{error::AppError, routes::root::AppState, utils}, primitives::AccountId, snapshot,
 };
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 
@@ -45,7 +45,7 @@ where
     info!("Block: {:?}", block);
 
     let build_result = snapshot::build(
-        &state.multi_block_state_client, &state.raw_state_client, block).await;
+        state.multi_block_state_client.as_ref(), state.raw_state_client.as_ref(), block).await;
 
     let (status, response) = match build_result {
         Ok(result) => (

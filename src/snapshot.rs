@@ -5,16 +5,26 @@ use sp_core::Get;
 use futures::future::join_all;
 use tracing::info;
 
-use crate::multi_block_state_client::{BlockDetails, ChainClientTrait, ElectionSnapshotPage, MultiBlockClient, MultiBlockClientTrait, StorageTrait, TargetSnapshotPage, VoterData, VoterSnapshotPage};
+use crate::multi_block_state_client::{BlockDetails, ChainClientTrait, ElectionSnapshotPage, MultiBlockClientTrait, StorageTrait, TargetSnapshotPage, VoterData, VoterSnapshotPage};
 use crate::primitives::{AccountId, Storage};
+use crate::raw_state_client::RawClientTrait;
 use frame_support::BoundedVec;
 use crate::{
     models::{Snapshot, SnapshotNominator, SnapshotValidator, StakingConfig}, 
-    raw_state_client::{RpcClient, RawClient}
+    raw_state_client::RpcClient
 };
 
-pub async fn build<C: RpcClient, SC: ChainClientTrait, MC: MinerConfig + Send + Sync>(
-multi_block_client: &MultiBlockClient<SC, MC>, raw_client: &RawClient<C>, block: Option<H256>) -> Result<Snapshot, Box<dyn std::error::Error>>
+pub async fn build<
+    RC: RpcClient + Send + Sync + 'static,
+    CC: ChainClientTrait + Send + Sync + 'static,
+    MC: MinerConfig + Send + Sync + 'static,
+    MBC: MultiBlockClientTrait<CC, MC> + Send + Sync + 'static,
+    RawC: RawClientTrait<RC> + Send + Sync + 'static,
+>(
+    multi_block_client: &MBC,
+    raw_client: &RawC,
+    block: Option<H256>,
+) -> Result<Snapshot, Box<dyn std::error::Error>>
 where
     MC: MinerConfig<AccountId = AccountId> + Send,
     MC::TargetSnapshotPerBlock: Send,
@@ -22,8 +32,8 @@ where
     MC::Pages: Send,
     MC::MaxVotesPerVoter: Send,
 {
-    let block_details = multi_block_client.get_block_details(block).await?;
-    let (snapshot, staking_config) = get_snapshot_data_from_multi_block(&multi_block_client, raw_client, &block_details)
+    let block_details = multi_block_client.get_block_details::<Storage>(block).await?;
+    let (snapshot, staking_config) = get_snapshot_data_from_multi_block(multi_block_client, raw_client, &block_details)
         .await
         .map_err(|e| format!("Error getting snapshot data: {}", e))?;
 
@@ -67,10 +77,17 @@ where
     Ok(Snapshot { validators, nominators, config: staking_config })
 }
 
-pub async fn get_snapshot_data_from_multi_block<C: RpcClient, SC: ChainClientTrait, MC: MinerConfig>(
-    client: &MultiBlockClient<SC, MC>,
-    raw_client: &RawClient<C>,
-    block_details: &BlockDetails<Storage>,
+pub async fn get_snapshot_data_from_multi_block<
+    RC: RpcClient + Send + Sync + 'static,
+    CC: ChainClientTrait + Send + Sync + 'static,
+    MC: MinerConfig + Send + Sync + 'static,
+    MBC: MultiBlockClientTrait<CC, MC> + Send + Sync + 'static,
+    RawC: RawClientTrait<RC> + Send + Sync + 'static,
+    S: StorageTrait + 'static,
+>(
+    client: &MBC,
+    raw_client: &RawC,
+    block_details: &BlockDetails<S>,
 ) -> Result<(ElectionSnapshotPage<MC>, StakingConfig), Box<dyn std::error::Error>>
 where
     AccountId: Send,
@@ -188,7 +205,7 @@ where
 }
 
 pub async fn get_staking_config_from_multi_block<
-    C: crate::multi_block_state_client::ChainClientTrait + Send + Sync + 'static, 
+    C: ChainClientTrait + Send + Sync + 'static, 
     MC: MinerConfig + Send + Sync + 'static, 
     MBC: MultiBlockClientTrait<C, MC> + Send + Sync + 'static,
     S: StorageTrait + 'static>(
@@ -208,37 +225,12 @@ where
 mod tests {
     use super::*;
     use mockall::mock;
-    use pallet_staking::ValidatorPrefs;
     use crate::miner_config::polkadot::MinerConfig as PolkadotMinerConfig;
-    use crate::miner_config::kusama::MinerConfig as KusamaMinerConfig;
-    use crate::miner_config::substrate::MinerConfig as SubstrateMinerConfig;
-    use crate::models::Chain;
-    use crate::multi_block_state_client::{StorageTrait, Phase};
-    use crate::primitives::{Hash, Storage};
-    use crate::raw_state_client::{NominationsLight, StakingLedger};
-    use crate::miner_config::{MinerConstants, set_runtime_constants};
+    use crate::multi_block_state_client::{MockMultiBlockClientTrait, MockChainClientTrait, StorageTrait, Phase};
+    use crate::primitives::{AccountId, Hash};
+    use crate::raw_state_client::{MockRawClientTrait, MockRpcClient, NominationsLight, StakingLedger};
+    use crate::miner_config::initialize_runtime_constants;
 
-    mock! {
-        pub MultiBlockClient<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static> {}
-    
-        #[async_trait::async_trait]
-        impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static> MultiBlockClientTrait<C, MC> for MultiBlockClient<C, MC> {
-            async fn get_storage<S: StorageTrait + From<Storage> + 'static>(&self, block: Option<Hash>) -> Result<S, Box<dyn std::error::Error>>;
-            async fn get_block_details<S: StorageTrait + From<Storage> + 'static>(&self, block: Option<Hash>) -> Result<BlockDetails<S>, Box<dyn std::error::Error>>;
-            async fn get_phase<S: StorageTrait + 'static>(&self, storage: &S) -> Result<Phase, Box<dyn std::error::Error>>;
-            async fn get_round<S: StorageTrait + 'static>(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error>>;
-            async fn get_desired_targets<S: StorageTrait + 'static>(&self, storage: &S, round: u32) -> Result<u32, Box<dyn std::error::Error>>;
-            async fn get_block_number<S: StorageTrait + 'static>(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error>>;
-            async fn get_min_nominator_bond<S: StorageTrait + 'static>(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error>> where S: Send + Sync + 'static;
-            async fn get_min_validator_bond<S: StorageTrait + 'static>(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error>>;
-            async fn fetch_paged_voter_snapshot<S: StorageTrait + 'static>(&self, storage: &S, round: u32, page: u32) -> Result<VoterSnapshotPage<MC>, Box<dyn std::error::Error>> where S: Send + Sync + 'static;
-            async fn fetch_paged_target_snapshot<S: StorageTrait + 'static>(&self, storage: &S, round: u32, page: u32) -> Result<TargetSnapshotPage<MC>, Box<dyn std::error::Error>>;
-            async fn get_validator_prefs<S: StorageTrait + 'static>(&self, storage: &S, validator: AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error>>;
-            async fn get_nominator<S: StorageTrait + 'static>(&self, storage: &S, nominator: AccountId) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error>>;
-            async fn get_controller_from_stash<S: StorageTrait + 'static>(&self, storage: &S, stash: AccountId) -> Result<Option<AccountId>, Box<dyn std::error::Error>>;
-            async fn ledger<S: StorageTrait + 'static>(&self, storage: &S, account: AccountId) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>>;
-        }
-    }
     use subxt::utils::Yes;
     use subxt::storage::Address;
     mock! {
@@ -263,28 +255,10 @@ mod tests {
         }
     }
 
-    mock! {
-        #[derive(Debug, Clone)]
-        pub DummyChainClient {} 
-
-        #[async_trait::async_trait]
-        impl ChainClientTrait for DummyChainClient {
-            async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error>>;
-
-            async fn fetch_constant<T: serde::de::DeserializeOwned>(
-                &self,
-                pallet: &str,
-                constant_name: &str,
-            ) -> Result<T, Box<dyn std::error::Error>>
-            where
-                T: 'static;
-        }
-    }
-
 
     #[tokio::test]
     async fn test_get_staking_config() {
-        let mut mock_client = MockMultiBlockClient::<MockDummyChainClient, PolkadotMinerConfig>::new();
+        let mut mock_client = MockMultiBlockClientTrait::<MockChainClientTrait, PolkadotMinerConfig>::new();
 
         mock_client
             .expect_get_min_nominator_bond()
@@ -312,5 +286,120 @@ mod tests {
         assert_eq!(config.max_nominations, 16);
     }
 
+    #[tokio::test]
+    async fn test_get_snapshot_data_from_multi_block() {
+        let mut mock_client = MockMultiBlockClientTrait::<MockChainClientTrait, PolkadotMinerConfig>::new();
 
+        mock_client
+            .expect_get_min_nominator_bond()
+            .returning(|_storage: &MockDummyStorage| Ok(100));
+
+        mock_client
+            .expect_get_min_validator_bond()
+            .returning(|_storage: &MockDummyStorage| Ok(200));
+
+        mock_client
+            .expect_fetch_paged_voter_snapshot()
+            .returning(|_storage: &MockDummyStorage, _round: u32, _page: u32| Ok(VoterSnapshotPage::<PolkadotMinerConfig>::new()));
+
+        mock_client
+            .expect_fetch_paged_target_snapshot()
+            .returning(|_storage: &MockDummyStorage, _round: u32, _page: u32| Ok(TargetSnapshotPage::<PolkadotMinerConfig>::new()));
+
+        let raw_client = MockRawClientTrait::<MockRpcClient>::new();
+            
+        let result = get_snapshot_data_from_multi_block(&mock_client, &raw_client, &BlockDetails::<MockDummyStorage> {
+            block_hash: Some(Hash::zero()),
+            phase: Phase::Snapshot(0),
+            round: 1,
+            n_pages: 1,
+            desired_targets: 10,
+            storage: MockDummyStorage::new(),
+            _block_number: 100,
+        }).await;
+
+        assert!(result.is_ok());
+        let (snapshot, config) = result.unwrap();
+        
+        assert_eq!(snapshot.voters, vec![VoterSnapshotPage::<PolkadotMinerConfig>::new()]);
+        assert_eq!(snapshot.targets, TargetSnapshotPage::<PolkadotMinerConfig>::new());
+        assert_eq!(config.min_nominator_bond, 100);
+        assert_eq!(config.min_validator_bond, 200);
+        assert_eq!(config.desired_validators, 10);
+        assert_eq!(config.max_nominations, 16);
+    }   
+
+    #[tokio::test]
+    async fn test_get_snapshot_data_from_multi_block_no_snapshot() {
+        initialize_runtime_constants();
+        let mut mock_client = MockMultiBlockClientTrait::<MockChainClientTrait, PolkadotMinerConfig>::new();
+
+        mock_client
+            .expect_get_min_nominator_bond()
+            .returning(|_storage: &MockDummyStorage| Ok(0));
+
+        mock_client
+            .expect_get_min_validator_bond()
+            .returning(|_storage: &MockDummyStorage| Ok(0));
+
+        let mut raw_client = MockRawClientTrait::<MockRpcClient>::new();
+
+        raw_client
+            .expect_get_nominators()
+            .returning(|_at: Option<H256>| Ok(vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()]));
+
+        raw_client
+            .expect_get_validators()
+            .returning(|_at: Option<H256>| Ok(vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()]));
+
+        mock_client
+            .expect_get_nominator()
+            .returning(|_storage: &MockDummyStorage, _nominator: AccountId| Ok(Some(NominationsLight {
+                targets: vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()],
+                _submitted_in: 10,
+                suppressed: false,
+            })));
+        
+        mock_client
+            .expect_get_controller_from_stash()
+            .returning(|_storage: &MockDummyStorage, _stash: AccountId| Ok(Some(AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap())));
+
+        mock_client
+            .expect_ledger()
+            .returning(|_storage: &MockDummyStorage, _account: AccountId| Ok(Some(StakingLedger {
+                stash: AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+                total: 100,
+                active: 100,
+                unlocking: vec![],
+            })));
+
+        let result = get_snapshot_data_from_multi_block(&mock_client, &raw_client, &BlockDetails::<MockDummyStorage> {
+            block_hash: Some(Hash::zero()),
+            phase: Phase::Snapshot(10),
+            round: 1,
+            n_pages: 1,
+            desired_targets: 10,
+            storage: MockDummyStorage::new(),
+            _block_number: 100,
+        }).await;
+
+        assert!(result.is_ok());
+        let (snapshot, config) = result.unwrap();
+        let voter_targets = BoundedVec::try_from(vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()]).map_err(|_| "Too many targets in voter").unwrap();
+        let voter = (AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+            100,
+            voter_targets
+        );
+        let voter_page: VoterSnapshotPage<PolkadotMinerConfig> = BoundedVec::try_from(vec![voter]).map_err(|_| "Too many voters in chunk").unwrap();
+        let voters = vec![voter_page];
+
+        let targets: TargetSnapshotPage<PolkadotMinerConfig> = BoundedVec::try_from(vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()]).map_err(|_| "Too many targets in voter").unwrap();
+
+        assert_eq!(snapshot.voters, voters);
+        assert_eq!(snapshot.targets, targets);
+        assert_eq!(config.min_nominator_bond, 0);
+        assert_eq!(config.min_validator_bond, 0);
+        assert_eq!(config.desired_validators, 10);
+        assert_eq!(config.max_nominations, 16);
+    }
 }

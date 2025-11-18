@@ -12,7 +12,7 @@ use futures::future::join_all;
 use sp_runtime::Perbill;
 use tracing::info;
 use frame_support::BoundedVec;
-use crate::multi_block_state_client::{MultiBlockClientTrait, VoterData, VoterSnapshotPage};
+use crate::{multi_block_state_client::{MultiBlockClientTrait, VoterData, VoterSnapshotPage}, primitives::Storage};
 
 use crate::{
     models::{Validator, ValidatorNomination}, multi_block_state_client::{ChainClientTrait, MultiBlockClient}, primitives::AccountId, raw_state_client::{RawClient, RpcClient}, snapshot
@@ -42,6 +42,7 @@ pub async fn simulate<C: RpcClient, SC: ChainClientTrait, MC: MinerConfig>(
     min_validator_bond: Option<u128>,
 ) -> Result<SimulationResult, Box<dyn std::error::Error>>
 where
+    C: RpcClient + Send + Sync + 'static,
     MC: MinerConfig + 'static,
     MC: MinerConfig<AccountId = AccountId> + Send,
     <MC as MinerConfig>::TargetSnapshotPerBlock: Send,
@@ -51,7 +52,7 @@ where
     <MC as MinerConfig>::Solution: Send,
     MC: Send + Sync + 'static,
 {
-    let block_details = multi_block_state_client.get_block_details(at).await?;
+    let block_details = multi_block_state_client.get_block_details::<Storage>(at).await?;
     info!("Fetching snapshot data for election...");
     let (mut snapshot, staking_config) = snapshot::get_snapshot_data_from_multi_block(multi_block_state_client, raw_state_client, &block_details).await?;
 

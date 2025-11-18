@@ -10,6 +10,7 @@ use crate::api::routes::root;
 use crate::models::{Chain, Algorithm};
 use crate::multi_block_state_client::{MultiBlockClient, MultiBlockClientTrait};
 use crate::primitives::Storage;
+use crate::raw_state_client::{RawClient, RawClientTrait};
 use crate::subxt_client::Client;
 
 mod raw_state_client;
@@ -226,7 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("Taking snapshot...");
             let snapshot = with_miner_config!(chain, {
                 let multi_block_client = MultiBlockClient::<Client, MinerConfig>::new(subxt_client.clone());
-                snapshot::build::<WsClient, Client, MinerConfig>(&multi_block_client, &raw_client, block).await
+                snapshot::build::<WsClient, Client, MinerConfig, MultiBlockClient<Client, MinerConfig>, RawClient<WsClient>>(&multi_block_client, &raw_client, block).await
             });
             if snapshot.is_err() {
                 return Err(format!("Error generating snapshot -> {}", snapshot.err().unwrap()).into());

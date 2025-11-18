@@ -118,6 +118,26 @@ pub fn set_runtime_constants(chain: Chain, constants: MinerConstants) {
 	});
 }
 
+#[cfg(test)]
+use std::sync::Once;
+#[cfg(test)]
+static INIT: Once = Once::new();
+
+#[cfg(test)]
+pub fn initialize_runtime_constants() {
+	INIT.call_once(|| {
+		// Ignore error if constants are already set (e.g., by another test)
+		let _ = set_runtime_constants(Chain::Polkadot, MinerConstants {
+			pages: 10,
+			max_winners_per_page: 10,
+			max_backers_per_winner: 10,
+			voter_snapshot_per_block: 10,
+			target_snapshot_per_block: 10,
+			max_length: 10,
+		});
+	});
+}
+
 /// Set election algorithm, balancing iterations, and max nominations from args
 /// 
 /// Note: For concurrent API requests, use `with_election_config` instead

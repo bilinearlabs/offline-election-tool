@@ -2,6 +2,7 @@ use jsonrpsee_core::client::ClientT;
 use jsonrpsee_core::traits::ToRpcParams;
 use jsonrpsee_core::ClientError;
 use jsonrpsee_ws_client::{WsClient, WsClientBuilder};
+use mockall::automock;
 use tracing::error;
 
 use parity_scale_codec::{Decode, Encode};
@@ -42,7 +43,7 @@ pub struct NominationsLight<AccountId> {
 }
 
 // Trait for jsonrpsee client operations to enable dependency injection for testing
-#[async_trait::async_trait]
+#[automock]
 pub trait RpcClient: Send + Sync {
     async fn rpc_request<T, P>(&self, method: &str, params: P) -> Result<T, ClientError>
     where
@@ -51,7 +52,6 @@ pub trait RpcClient: Send + Sync {
 }
 
 // Implementation of RpcClient for WsClient
-#[async_trait::async_trait]
 impl RpcClient for WsClient {
     async fn rpc_request<T, P>(&self, method: &str, params: P) -> Result<T, ClientError>
     where
@@ -60,6 +60,16 @@ impl RpcClient for WsClient {
     {
         self.request(method, params).await
     }
+}
+
+#[automock]
+pub trait RawClientTrait<C: RpcClient + Send + Sync + 'static> {
+    async fn get_runtime_version(&self) -> Result<RuntimeVersion, Box<dyn std::error::Error>>;
+    async fn get_keys_paged(&self, prefix: StorageKey, count: u32, start_key: Option<StorageKey>, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>>;
+    async fn get_all_keys(&self, prefix: StorageKey, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>>;
+    async fn enumerate_accounts(&self, module: &[u8], storage: &[u8], at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>>;
+    async fn get_validators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>>;
+    async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>>;
 }
 
 #[derive(Clone)]
@@ -75,10 +85,37 @@ impl RawClient<WsClient> {
             .await?;
         Ok(RawClient { client })
     }
+
 }
 
-#[allow(dead_code)]
 impl<C: RpcClient> RawClient<C> {
+    async fn read<T: Decode>(&self, key: StorageKey, at: Option<H256>) -> Result<Option<T>, Box<dyn std::error::Error>> {
+        let serialized_key = to_value(key).expect("StorageKey serialization infallible");
+        let at_val = to_value(at).expect("Block hash serialization infallible");
+        let raw: Result<Option<StorageData>, ClientError> = self.client
+            .rpc_request("state_getStorage", (serialized_key, at_val))
+            .await;
+
+        if raw.is_err() {
+            error!("Storage read error: {:?}", raw.err().unwrap());
+            return Err("Storage read error".into());
+        }
+
+        match raw.unwrap() {
+            None => Ok(None),
+            Some(data) => {
+                let encoded = data.0;
+                match <T as Decode>::decode(&mut encoded.as_slice()) {
+                    Ok(value) => Ok(Some(value)),
+                    Err(e) => {
+                        error!("Decode error: {:?}", e);
+                        Err("Decode error".into())
+                    }
+                }
+            }
+        }
+    }
+
     fn module_prefix(&self, module: &[u8], storage: &[u8]) -> Vec<u8> {
         let module_hash = twox_128(module);
         let storage_hash = twox_128(storage);
@@ -124,35 +161,19 @@ impl<C: RpcClient> RawClient<C> {
         final_key.extend_from_slice(&key3_hash);
         StorageKey(final_key)
     }
-
-    pub async fn read<T: Decode>(&self, key: StorageKey, at: Option<H256>) -> Result<Option<T>, Box<dyn std::error::Error>> {
-        let serialized_key = to_value(key).expect("StorageKey serialization infallible");
-        let at_val = to_value(at).expect("Block hash serialization infallible");
-        let raw: Result<Option<StorageData>, ClientError> = self.client
-            .rpc_request("state_getStorage", (serialized_key, at_val))
-            .await;
-
-        if raw.is_err() {
-            error!("Storage read error: {:?}", raw.err().unwrap());
-            return Err("Storage read error".into());
-        }
-
-        match raw.unwrap() {
-            None => Ok(None),
-            Some(data) => {
-                let encoded = data.0;
-                match <T as Decode>::decode(&mut encoded.as_slice()) {
-                    Ok(value) => Ok(Some(value)),
-                    Err(e) => {
-                        error!("Decode error: {:?}", e);
-                        Err("Decode error".into())
-                    }
-                }
-            }
+    
+    fn extract_key<T: Decode>(&self, key: &StorageKey, prefix_len: usize) -> Option<T> {
+        if key.0.len() > prefix_len + 8 {
+            let mut bytes = &key.0[prefix_len + 8..];
+            T::decode(&mut bytes).ok()
+        } else {
+            None
         }
     }
-    
-    pub async fn get_runtime_version(&self) -> Result<RuntimeVersion, Box<dyn std::error::Error>> {
+}
+
+impl<C: RpcClient + Send + Sync + 'static> RawClientTrait<C> for RawClient<C> {
+    async fn get_runtime_version(&self) -> Result<RuntimeVersion, Box<dyn std::error::Error>> {
         let data: Result<RuntimeVersion, ClientError>  = self.client
             .rpc_request("state_getRuntimeVersion", (None::<()>,))
             .await;
@@ -166,7 +187,7 @@ impl<C: RpcClient> RawClient<C> {
 
     // Get all targets when no snapshot
     // Get paged keys
-    pub async fn get_keys_paged(&self, prefix: StorageKey, count: u32, start_key: Option<StorageKey>, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>> {
+    async fn get_keys_paged(&self, prefix: StorageKey, count: u32, start_key: Option<StorageKey>, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>> {
         let serialized_prefix = to_value(prefix).expect("StorageKey serialization infallible");
         let serialized_start = start_key.map(|k| to_value(k).expect("StorageKey serialization infallible"));
         let at_val = to_value(at).expect("Block hash serialization infallible");
@@ -179,7 +200,7 @@ impl<C: RpcClient> RawClient<C> {
     }
 
     /// Get all keys from a storage map by paginating through results
-    pub async fn get_all_keys(&self, prefix: StorageKey, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>> {
+    async fn get_all_keys(&self, prefix: StorageKey, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>> {
         let mut all_keys = Vec::new();
         let mut start_key: Option<StorageKey> = None;
         let page_size = 1000u32;
@@ -203,14 +224,6 @@ impl<C: RpcClient> RawClient<C> {
         Ok(all_keys)
     }
 
-    fn extract_key<T: Decode>(&self, key: &StorageKey, prefix_len: usize) -> Option<T> {
-        if key.0.len() > prefix_len + 8 {
-            let mut bytes = &key.0[prefix_len + 8..];
-            T::decode(&mut bytes).ok()
-        } else {
-            None
-        }
-    }
 
     // Enumerate all AccountId keys of a Twox64Concat map
     async fn enumerate_accounts(&self, module: &[u8], storage: &[u8], at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
@@ -228,12 +241,12 @@ impl<C: RpcClient> RawClient<C> {
     }
 
     // Get all validator stash accounts by enumerating Staking.Validators
-    pub async fn get_validators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
+    async fn get_validators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
         self.enumerate_accounts(b"Staking", b"Validators", at).await
     }
 
     // Get all nominator stash accounts by enumerating Staking.Nominators
-    pub async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
+    async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
         self.enumerate_accounts(b"Staking", b"Nominators", at).await
     }
 }
@@ -241,24 +254,10 @@ impl<C: RpcClient> RawClient<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mockall::mock;
     use mockall::predicate::*;
     use serde_json::Value;
     use sp_core::storage::StorageData;
 
-    // Mock the RpcClient trait
-    mock! {
-        #[derive(Debug, Clone)]
-        RpcClient {}
-
-        #[async_trait::async_trait]
-        impl RpcClient for RpcClient {
-            async fn rpc_request<T, P>(&self, method: &str, params: P) -> Result<T, ClientError>
-            where
-                T: serde::de::DeserializeOwned + 'static,
-                P: ToRpcParams + Send + 'static;
-        }
-    }
 
     fn create_test_account_id() -> AccountId {
         AccountId::from([1u8; 32])
