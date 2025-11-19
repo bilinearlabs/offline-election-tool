@@ -17,3 +17,40 @@ pub fn parse_block(block_str: Option<String>) -> Result<Option<H256>, Box<dyn st
     let block = block.unwrap();
     Ok(Some(block))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_block() {
+        let block = parse_block(Some("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string()));
+        assert!(block.is_ok());
+        let block = block.unwrap();
+        assert!(block.is_some());
+        let block = block.unwrap();
+        assert_eq!(block, H256::from_str("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").unwrap());
+    }
+
+    #[test]
+    fn test_parse_block_latest() {
+        let block = parse_block(Some("latest".to_string()));
+        assert!(block.is_ok());
+        let block = block.unwrap();
+        assert!(block.is_none());
+    }
+
+    #[test]
+    fn test_parse_block_invalid() {
+        let block = parse_block(Some("invalid".to_string()));
+        assert!(block.is_err());
+    }
+
+    #[test]
+    fn test_parse_block_none() {
+        let block = parse_block(None);
+        assert!(block.is_ok());
+        let block = block.unwrap();
+        assert!(block.is_none());
+    }
+}
