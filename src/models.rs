@@ -26,13 +26,13 @@ impl Chain {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub struct ValidatorNomination {
     pub nominator: String,
     pub stake: Balance,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub struct Validator {
     pub stash: String,
     pub self_stake: Balance,

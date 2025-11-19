@@ -347,6 +347,7 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
 /// Block-specific details for a given block.
 /// Contains the storage snapshot and metadata for that specific block.
 /// Created via `MultiBlockClient::get_block_details()`.
+#[derive(Debug, Clone)]
 pub struct BlockDetails<S: StorageTrait> {
 	pub storage: S,
 	pub phase: Phase,

@@ -73,8 +73,8 @@ where
     // This ensures each concurrent request gets its own isolated value
     let result = miner_config::with_election_config(state.chain, algorithm, iterations, max_nominations, async {
         simulate::simulate(
-            raw_state_client,
             multi_block_client,
+            raw_state_client,
             block,
             desired_validators,
             apply_reduce,

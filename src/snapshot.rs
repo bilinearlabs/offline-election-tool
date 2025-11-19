@@ -237,7 +237,6 @@ mod tests {
     use subxt::utils::Yes;
     use subxt::storage::Address;
     mock! {
-        #[derive(Debug, Clone)]
         pub DummyStorage {}
         
         #[async_trait::async_trait]

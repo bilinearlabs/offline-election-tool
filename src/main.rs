@@ -201,8 +201,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("Phase: {:?}", phase);
                 
                 simulate::simulate(
-                    &raw_client,
                     &multi_block_client,
+                    &raw_client,
                     block,
                     desired_validators,
                     apply_reduce,

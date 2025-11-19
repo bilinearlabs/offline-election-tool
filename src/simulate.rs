@@ -12,10 +12,10 @@ use futures::future::join_all;
 use sp_runtime::Perbill;
 use tracing::info;
 use frame_support::BoundedVec;
-use crate::{multi_block_state_client::{MultiBlockClientTrait, StorageTrait, VoterData, VoterSnapshotPage}, primitives::Storage};
+use crate::{multi_block_state_client::{MultiBlockClientTrait, StorageTrait, VoterData, VoterSnapshotPage}, primitives::Storage, raw_state_client::RawClientTrait};
 
 use crate::{
-    models::{Validator, ValidatorNomination}, multi_block_state_client::{ChainClientTrait, MultiBlockClient}, primitives::AccountId, raw_state_client::{RawClient, RpcClient}, snapshot
+    models::{Validator, ValidatorNomination}, multi_block_state_client::ChainClientTrait, primitives::AccountId, raw_state_client::RpcClient, snapshot
 };
 
 #[derive(Debug, Serialize)]
@@ -31,9 +31,16 @@ pub struct Override {
     pub candidates_remove: Vec<String>,
 }
 
-pub async fn simulate<C: RpcClient, SC: ChainClientTrait, MC: MinerConfig, S: StorageTrait + From<Storage> + Clone + 'static>(
-    raw_state_client: &RawClient<C>,
-    multi_block_state_client: &MultiBlockClient<SC, MC, S>,
+pub async fn simulate<
+    RC: RpcClient + Send + Sync + 'static,
+    CC: ChainClientTrait + Send + Sync + 'static,
+    S: StorageTrait + From<Storage> + Clone + 'static,
+    MC: MinerConfig + Send + Sync + 'static,
+    MBC: MultiBlockClientTrait<CC, MC, S> + Send + Sync + 'static,
+    RawC: RawClientTrait<RC> + Send + Sync + 'static,
+>(
+    multi_block_state_client: &MBC,
+    raw_state_client: &RawC,
     at: Option<H256>,
     desired_validators: Option<u32>,
     apply_reduce: bool,
@@ -42,7 +49,7 @@ pub async fn simulate<C: RpcClient, SC: ChainClientTrait, MC: MinerConfig, S: St
     min_validator_bond: Option<u128>,
 ) -> Result<SimulationResult, Box<dyn std::error::Error>>
 where
-    C: RpcClient + Send + Sync + 'static,
+    RC: RpcClient + Send + Sync + 'static,
     MC: MinerConfig + 'static,
     MC: MinerConfig<AccountId = AccountId> + Send,
     <MC as MinerConfig>::TargetSnapshotPerBlock: Send,
@@ -274,4 +281,315 @@ where
     };
 
     Ok(simulation_result)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockall::{mock};
+    use mockall::predicate::*;
+    use subxt::utils::Yes;
+    use subxt::storage::Address;
+    use crate::miner_config::polkadot::MinerConfig as PolkadotMinerConfig;
+    use crate::multi_block_state_client::{BlockDetails, ElectionSnapshotPage, MockMultiBlockClientTrait};
+    use crate::multi_block_state_client::MockChainClientTrait;
+    use crate::raw_state_client::{MockRawClientTrait, StakingLedger};
+    use crate::raw_state_client::MockRpcClient;
+    use crate::models::StakingConfig;
+    use injectorpp::interface::injector::*;
+    use crate::primitives::Hash;
+    use crate::multi_block_state_client::Phase;
+    use crate::miner_config::initialize_runtime_constants;
+
+    mock! {
+        pub DummyStorage {}
+        
+        #[async_trait::async_trait]
+        impl StorageTrait for DummyStorage {
+            async fn fetch<Addr>(
+                &self,
+                address: &Addr,
+            ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error>>
+            where
+                Addr: Address<IsFetchable = Yes> + Sync + 'static;
+
+            async fn fetch_or_default<Addr>(
+                &self,
+                address: &Addr,
+            ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error>>
+            where
+                Addr: Address<IsFetchable = Yes, IsDefaultable = Yes> + Sync + 'static;
+        }
+    }
+
+    // Implement Clone for MockDummyStorage
+    impl Clone for MockDummyStorage {
+        fn clone(&self) -> Self {
+            MockDummyStorage::new()
+        }
+    }
+
+    // Implement From<Storage> for DummyStorage to satisfy the trait bound in tests
+    // This allows MockDummyStorage to be used with get_storage/get_block_details
+    impl From<crate::primitives::Storage> for MockDummyStorage {
+        fn from(_storage: crate::primitives::Storage) -> Self {
+            MockDummyStorage::new()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_simulate() {
+        initialize_runtime_constants();
+        type MockMBC = MockMultiBlockClientTrait<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>;
+        type MockRawC = MockRawClientTrait<MockRpcClient>;
+        type MockBD = BlockDetails<MockDummyStorage>;
+        
+        let mut mock_client = MockMBC::new();
+        let raw_client = MockRawC::new();
+        let block_details = MockBD {
+            block_hash: Some(Hash::zero()),
+            phase: Phase::Snapshot(0),
+            round: 1,
+            n_pages: 1,
+            desired_targets: 10,
+            storage: MockDummyStorage::new(),
+            _block_number: 100,
+        };
+        
+        let block_details_clone = block_details.clone();
+        mock_client.expect_get_block_details()
+            .with(eq(None))
+            .returning(move |_block: Option<H256>| Ok(block_details_clone.clone()));
+
+        mock_client
+            .expect_get_validator_prefs()
+            .returning(|_storage: &MockDummyStorage, _validator: AccountId| Ok(ValidatorPrefs {
+                commission: Perbill::from_parts(0),
+                blocked: false,
+            }));
+
+        let mut injector = InjectorPP::new();
+        injector
+            .when_called_async(injectorpp::async_func!(
+                snapshot::get_snapshot_data_from_multi_block(&mock_client, &raw_client, &block_details),
+                Result<(ElectionSnapshotPage<PolkadotMinerConfig>, StakingConfig), Box<dyn std::error::Error>>)
+            )
+            .will_return_async(injectorpp::async_return!(
+                Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
+                    voters: vec![BoundedVec::try_from(vec![(
+                        AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+                        100,
+                        BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+                    )]).unwrap()],
+                    targets: BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+                }, StakingConfig {
+                    desired_validators: 10,
+                    max_nominations: 16,
+                    min_nominator_bond: 0,
+                    min_validator_bond: 0,
+                })), Result<(ElectionSnapshotPage<PolkadotMinerConfig>, StakingConfig), Box<dyn std::error::Error>>
+            ));
+
+        let result = simulate(&mock_client, &raw_client, None, None, false, None, None, None).await;
+        assert!(result.is_ok());
+        let simulation_result = result.unwrap();
+        assert_eq!(simulation_result.active_validators, vec![Validator {
+            stash: "5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2".to_string(),
+            self_stake: 0,
+            total_stake: 100,
+            commission: 0.0,
+            blocked: false,
+            nominations_count: 1,
+            nominations: vec![ValidatorNomination {
+                nominator: "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
+                stake: 100,
+            }],
+        }]);
+    }
+
+    #[tokio::test]
+    async fn test_simulate_with_min_bonds() {
+        initialize_runtime_constants();
+        type MockMBC = MockMultiBlockClientTrait<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>;
+        type MockRawC = MockRawClientTrait<MockRpcClient>;
+        type MockBD = BlockDetails<MockDummyStorage>;
+        
+        let mut mock_client = MockMBC::new();
+        let raw_client = MockRawC::new();
+        let block_details = MockBD {
+            block_hash: Some(Hash::zero()),
+            phase: Phase::Snapshot(0),
+            round: 1,
+            n_pages: 1,
+            desired_targets: 10,
+            storage: MockDummyStorage::new(),
+            _block_number: 100,
+        };
+        
+        let block_details_clone = block_details.clone();
+        mock_client.expect_get_block_details()
+            .with(eq(None))
+            .returning(move |_block: Option<H256>| Ok(block_details_clone.clone()));
+
+        // Validator 1
+        mock_client.expect_get_controller_from_stash()
+            .returning(|_storage: &MockDummyStorage, _stash: AccountId| Ok(Some(AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap())));
+
+        mock_client.expect_ledger()
+            .returning(|_storage: &MockDummyStorage, _account: AccountId| Ok(Some(StakingLedger {
+                stash: AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap(),
+                total: 100,
+                active: 100,
+                unlocking: vec![],
+            })));
+
+        // Validator 2
+        mock_client.expect_get_controller_from_stash()
+            .returning(|_storage: &MockDummyStorage, _stash: AccountId| Ok(Some(AccountId::from_ss58check("3DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap())));
+
+        mock_client.expect_ledger()
+            .returning(|_storage: &MockDummyStorage, _account: AccountId| Ok(Some(StakingLedger {
+                stash: AccountId::from_ss58check("3DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap(),
+                total: 0,
+                active: 0,
+                unlocking: vec![],
+            })));
+
+        mock_client
+            .expect_get_validator_prefs()
+            .returning(|_storage: &MockDummyStorage, _validator: AccountId| Ok(ValidatorPrefs {
+                commission: Perbill::from_parts(0),
+                blocked: false,
+            }));
+
+        let mut injector = InjectorPP::new();
+        injector
+            .when_called_async(injectorpp::async_func!(
+                snapshot::get_snapshot_data_from_multi_block(&mock_client, &raw_client, &block_details),
+                Result<(ElectionSnapshotPage<PolkadotMinerConfig>, StakingConfig), Box<dyn std::error::Error>>)
+            )
+            .will_return_async(injectorpp::async_return!(
+                Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
+                    voters: vec![BoundedVec::try_from(vec![
+                        (
+                            AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+                            100,
+                            BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+                        ),
+                        (
+                            AccountId::from_ss58check("136GehDWrz4tqL7ivAT53VeS3PweRZDSHyrbnWLdWJpchW8M").unwrap(),
+                            0,
+                            BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+                        )
+                        ]).unwrap()],
+                    targets: BoundedVec::try_from(vec![
+                        AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap(),
+                        AccountId::from_ss58check("15ANfaUMadXk65NtRqzCKuhAiVSA47Ks6fZs8rUcRQX11pzM").unwrap()
+                    ]).unwrap()
+                }, StakingConfig {
+                    desired_validators: 10,
+                    max_nominations: 16,
+                    min_nominator_bond: 100,
+                    min_validator_bond: 100,
+                })), Result<(ElectionSnapshotPage<PolkadotMinerConfig>, StakingConfig), Box<dyn std::error::Error>>
+            ));
+
+        let result = simulate(&mock_client, &raw_client, None, None, false, None, Some(100), Some(100)).await;
+        assert!(result.is_ok());
+        let simulation_result = result.unwrap();
+        assert_eq!(simulation_result.active_validators, vec![Validator {
+            stash: "5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2".to_string(),
+            self_stake: 0,
+            total_stake: 100,
+            commission: 0.0,
+            blocked: false,
+            nominations_count: 1,
+            nominations: vec![ValidatorNomination {
+                nominator: "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
+                stake: 100,
+            }],
+        }]);
+    }
+
+    #[tokio::test]
+    async fn test_simulate_with_manual_override() {
+        initialize_runtime_constants();
+        type MockMBC = MockMultiBlockClientTrait<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>;
+        type MockRawC = MockRawClientTrait<MockRpcClient>;
+        type MockBD = BlockDetails<MockDummyStorage>;
+        
+        let mut mock_client = MockMBC::new();
+        let raw_client = MockRawC::new();
+        let block_details = MockBD {
+            block_hash: Some(Hash::zero()),
+            phase: Phase::Snapshot(0),
+            round: 1,
+            n_pages: 1,
+            desired_targets: 10,
+            storage: MockDummyStorage::new(),
+            _block_number: 100,
+        };
+        
+        let block_details_clone = block_details.clone();
+        mock_client.expect_get_block_details()
+            .with(eq(None))
+            .returning(move |_block: Option<H256>| Ok(block_details_clone.clone()));
+
+        mock_client
+            .expect_get_validator_prefs()
+            .returning(|_storage: &MockDummyStorage, _validator: AccountId| Ok(ValidatorPrefs {
+                commission: Perbill::from_parts(0),
+                blocked: false,
+            }));
+
+        let mut injector = InjectorPP::new();
+        injector
+            .when_called_async(injectorpp::async_func!(
+                snapshot::get_snapshot_data_from_multi_block(&mock_client, &raw_client, &block_details),
+                Result<(ElectionSnapshotPage<PolkadotMinerConfig>, StakingConfig), Box<dyn std::error::Error>>)
+            )
+            .will_return_async(injectorpp::async_return!(
+                Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
+                    voters: vec![BoundedVec::try_from(vec![(
+                        AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+                        100,
+                        BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+                    )]).unwrap()],
+                    targets: BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+                }, StakingConfig {
+                    desired_validators: 10,
+                    max_nominations: 16,
+                    min_nominator_bond: 0,
+                    min_validator_bond: 0,
+                })), Result<(ElectionSnapshotPage<PolkadotMinerConfig>, StakingConfig), Box<dyn std::error::Error>>
+            ));
+
+        let manual_override = Override {
+            voters: vec![(
+                "5GE5XFDHirGGeYNNUCwCBks1rsSWMomj2AqNyZVFsKVUqWZD".to_string(),
+                100,
+                vec!["5E9yWMxT1CoRPo7CxXQ4uLpHBmwzjFfJDV87dDMGxDo6WuMa".to_string()]
+            )],
+            voters_remove: vec!["5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string()],
+            candidates: vec!["5E9yWMxT1CoRPo7CxXQ4uLpHBmwzjFfJDV87dDMGxDo6WuMa".to_string()],
+            candidates_remove: vec!["5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2".to_string()],
+        };
+
+        let result = simulate(&mock_client, &raw_client, None, None, false, Some(manual_override), None, None).await;
+        assert!(result.is_ok());
+        let simulation_result = result.unwrap();
+        assert_eq!(simulation_result.active_validators, vec![Validator {
+            stash: "5E9yWMxT1CoRPo7CxXQ4uLpHBmwzjFfJDV87dDMGxDo6WuMa".to_string(),
+            self_stake: 0,
+            total_stake: 100,
+            commission: 0.0,
+            blocked: false,
+            nominations_count: 1,
+            nominations: vec![ValidatorNomination {
+                nominator: "5GE5XFDHirGGeYNNUCwCBks1rsSWMomj2AqNyZVFsKVUqWZD".to_string(),
+                stake: 100,
+            }],
+        }]);
+    }
 }

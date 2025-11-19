@@ -32,6 +32,14 @@ futures = "0.3.31"
 subxt = { version = "0.44.0", features = ["reconnecting-rpc-client"] }
 pallet-election-provider-multi-block = "0.4.0"
 frame-election-provider-support = "43.0.0"
+injectorpp = "0.4.0"
 
 [profile.dev]
 incremental = true
+
+[profile.test]
+opt-level = 0
+debug = true
+lto = false
+codegen-units = 1
+incremental = false

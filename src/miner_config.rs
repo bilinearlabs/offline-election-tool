@@ -128,12 +128,12 @@ pub fn initialize_runtime_constants() {
 	INIT.call_once(|| {
 		// Ignore error if constants are already set (e.g., by another test)
 		let _ = set_runtime_constants(Chain::Polkadot, MinerConstants {
-			pages: 10,
-			max_winners_per_page: 10,
-			max_backers_per_winner: 10,
-			voter_snapshot_per_block: 10,
-			target_snapshot_per_block: 10,
-			max_length: 10,
+			pages: 1,
+			max_winners_per_page: 1,
+			max_backers_per_winner: 1,
+			voter_snapshot_per_block: 2,
+			target_snapshot_per_block: 2,
+			max_length: 100000000,
 		});
 	});
 }
