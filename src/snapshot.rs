@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use mockall::automock;
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use sp_core::H256;
 use sp_core::crypto::{Ss58Codec};
@@ -14,18 +17,56 @@ use crate::{
     raw_state_client::RpcClient
 };
 
-pub async fn build<
+#[automock]
+#[async_trait::async_trait]
+pub trait SnapshotService: Send + Sync {
+    async fn build(
+        &self,
+        block: Option<H256>,
+    ) -> Result<Snapshot, Box<dyn std::error::Error>>;
+}
+
+pub struct SnapshotServiceImpl<
     RC: RpcClient + Send + Sync + 'static,
     CC: ChainClientTrait + Send + Sync + 'static,
-    S: StorageTrait + From<Storage> + 'static,
-    MC: MinerConfig + Send + Sync + 'static,
+    S: StorageTrait + From<Storage> + Clone + 'static,
+    MC: MinerConfig + Send + Sync + Clone + 'static,
     MBC: MultiBlockClientTrait<CC, MC, S> + Send + Sync + 'static,
     RawC: RawClientTrait<RC> + Send + Sync + 'static,
->(
-    multi_block_client: &MBC,
-    raw_client: &RawC,
-    block: Option<H256>,
-) -> Result<Snapshot, Box<dyn std::error::Error>>
+>
+where
+{
+    pub raw_state_client: Arc<RawC>,
+    pub multi_block_state_client: Arc<MBC>,
+    _phantom: std::marker::PhantomData<(RC, CC, S, MC)>,
+}
+
+impl<
+    RC: RpcClient + Send + Sync + 'static,
+    CC: ChainClientTrait + Send + Sync + 'static,
+    S: StorageTrait + From<Storage> + Clone + 'static,
+    MC: MinerConfig + Send + Sync + Clone + 'static,
+    MBC: MultiBlockClientTrait<CC, MC, S> + Send + Sync + 'static,
+    RawC: RawClientTrait<RC> + Send + Sync + 'static,
+> SnapshotServiceImpl<RC, CC, S, MC, MBC, RawC> {
+    pub fn new(multi_block_state_client: Arc<MBC>, raw_state_client: Arc<RawC>) -> Self {
+        Self {
+            multi_block_state_client,
+            raw_state_client,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<
+    RC: RpcClient + Send + Sync + 'static,
+    CC: ChainClientTrait + Send + Sync + 'static,
+    S: StorageTrait + From<Storage> + Clone + 'static,
+    MC: MinerConfig + Send + Sync + Clone + 'static,
+    MBC: MultiBlockClientTrait<CC, MC, S> + Send + Sync + 'static,
+    RawC: RawClientTrait<RC> + Send + Sync + 'static,
+> SnapshotService for SnapshotServiceImpl<RC, CC, S, MC, MBC, RawC>
 where
     MC: MinerConfig<AccountId = AccountId> + Send,
     MC::TargetSnapshotPerBlock: Send,
@@ -33,49 +74,56 @@ where
     MC::Pages: Send,
     MC::MaxVotesPerVoter: Send,
 {
-    let block_details = multi_block_client.get_block_details(block).await?;
-    let (snapshot, staking_config) = get_snapshot_data_from_multi_block(multi_block_client, raw_client, &block_details)
-        .await
-        .map_err(|e| format!("Error getting snapshot data: {}", e))?;
+    async fn build(
+        &self,
+        block: Option<H256>,
+    ) -> Result<Snapshot, Box<dyn std::error::Error>> {
+        let multi_block_state_client = self.multi_block_state_client.as_ref();
+        let raw_state_client = self.raw_state_client.as_ref();
+        let block_details = multi_block_state_client.get_block_details(block).await?;
+        let (snapshot, staking_config) = get_snapshot_data_from_multi_block(multi_block_state_client, raw_state_client, &block_details)
+            .await
+            .map_err(|e| format!("Error getting snapshot data: {}", e))?;
 
-    let voters = snapshot.voters;
-    let targets = snapshot.targets;
-    
-    let storage = &block_details.storage;
-    
-    let validator_futures: Vec<_> = targets.into_iter().map(|target| {
-        async move {
-            let validator_prefs = multi_block_client.get_validator_prefs(storage, target.clone())
-                .await
-                .map_err(|e| format!("Error getting validator prefs: {}", e))?;
-            
-            Ok::<SnapshotValidator, String>(SnapshotValidator {
-                stash: target.to_ss58check(),
-                commission: validator_prefs.commission.deconstruct() as f64 / 1_000_000_000.0,
-                blocked: validator_prefs.blocked,
-            })
+        let voters = snapshot.voters;
+        let targets = snapshot.targets;
+        
+        let storage = &block_details.storage;
+        
+        let validator_futures: Vec<_> = targets.into_iter().map(|target| {
+            async move {
+                let validator_prefs = multi_block_state_client.get_validator_prefs(storage, target.clone())
+                    .await
+                    .map_err(|e| format!("Error getting validator prefs: {}", e))?;
+                
+                Ok::<SnapshotValidator, String>(SnapshotValidator {
+                    stash: target.to_ss58check(),
+                    commission: validator_prefs.commission.deconstruct() as f64 / 1_000_000_000.0,
+                    blocked: validator_prefs.blocked,
+                })
+            }
+        }).collect();
+        
+        let validators: Vec<SnapshotValidator> = join_all(validator_futures)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        
+        let mut nominators: Vec<SnapshotNominator> = Vec::new();
+        for voter_page in voters {
+            for voter in voter_page {
+                let nominator = SnapshotNominator {
+                    stash: voter.0.to_ss58check(),
+                    stake: voter.1 as u128,
+                    nominations: voter.2.iter().map(|nomination| nomination.to_ss58check()).collect(),
+                };
+                nominators.push(nominator);
+            }
         }
-    }).collect();
-    
-    let validators: Vec<SnapshotValidator> = join_all(validator_futures)
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    
-    let mut nominators: Vec<SnapshotNominator> = Vec::new();
-    for voter_page in voters {
-        for voter in voter_page {
-            let nominator = SnapshotNominator {
-                stash: voter.0.to_ss58check(),
-                stake: voter.1 as u128,
-                nominations: voter.2.iter().map(|nomination| nomination.to_ss58check()).collect(),
-            };
-            nominators.push(nominator);
-        }
+        
+        Ok(Snapshot { validators, nominators, config: staking_config })
     }
-    
-    Ok(Snapshot { validators, nominators, config: staking_config })
 }
 
 pub async fn get_snapshot_data_from_multi_block<
@@ -236,6 +284,7 @@ mod tests {
     use pallet_staking::ValidatorPrefs;
     use subxt::utils::Yes;
     use subxt::storage::Address;
+    
     mock! {
         pub DummyStorage {}
         
@@ -261,6 +310,12 @@ mod tests {
     // This allows MockDummyStorage to be used with get_storage/get_block_details
     impl From<crate::primitives::Storage> for MockDummyStorage {
         fn from(_storage: crate::primitives::Storage) -> Self {
+            MockDummyStorage::new()
+        }
+    }
+
+    impl Clone for MockDummyStorage {
+        fn clone(&self) -> Self {
             MockDummyStorage::new()
         }
     }
@@ -545,7 +600,8 @@ mod tests {
         
         let raw_client = MockRawClientTrait::<MockRpcClient>::new();
 
-        let result = build(&mock_client, &raw_client, None).await;
+        let snapshot_service = SnapshotServiceImpl::new(Arc::new(mock_client), Arc::new(raw_client));
+        let result = snapshot_service.build(None).await;
         assert!(result.is_ok());
         let snapshot = result.unwrap();
         assert_eq!(snapshot.validators, vec![SnapshotValidator {

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use crate::{api::services::{SnapshotServiceImpl, SimulateServiceImpl}, models::Chain};
+use crate::{models::Chain};
 use axum::{
     Router,
     routing::{IntoMakeService, get, post},
@@ -7,7 +7,8 @@ use axum::{
 use tower_http::trace::TraceLayer;
 
 use crate::api::handler::{simulate, snapshot};
-use crate::api::services::{SnapshotService, SimulateService};
+use crate::simulate::{SimulateService};
+use crate::snapshot::{SnapshotService};
 
 pub struct AppState<
     Sim: SimulateService + Send + Sync + 'static,
@@ -56,13 +57,10 @@ Snap: SnapshotService + Send + Sync + 'static,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mockall::mock;
-    use mockall::predicate::*;
     use axum_test::TestServer;
     use crate::miner_config::initialize_runtime_constants;
-    use crate::multi_block_state_client::MockMultiBlockClientTrait;
-    use crate::raw_state_client::MockRawClientTrait;
-    use crate::api::services::{MockSimulateService, MockSnapshotService};
+    use crate::snapshot::MockSnapshotService;
+    use crate::simulate::MockSimulateService;
 
     #[tokio::test]
     async fn test_routes() {

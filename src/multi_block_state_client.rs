@@ -18,6 +18,7 @@ use std::marker::PhantomData;
 
 // Trait for chain client operations to enable dependency injection for testing
 #[automock]
+#[async_trait::async_trait]
 pub trait ChainClientTrait: Send + Sync {
     async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error>>;
     async fn fetch_constant<T: serde::de::DeserializeOwned>(
@@ -30,6 +31,7 @@ pub trait ChainClientTrait: Send + Sync {
 }
 
 // Implementation of ChainClientTrait for Client
+#[async_trait::async_trait]
 impl ChainClientTrait for Client {
     async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error>> {
         if let Some(block) = block {
@@ -159,6 +161,7 @@ pub struct ElectionSnapshotPage<MC: MinerConfig> {
 }
 
 #[automock]
+#[async_trait::async_trait]
 pub trait MultiBlockClientTrait<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static, S: StorageTrait + From<Storage> + 'static> {
     async fn get_storage(&self, block: Option<Hash>) -> Result<S, Box<dyn std::error::Error>>;
     async fn get_block_details(&self, block: Option<Hash>) -> Result<BlockDetails<S>, Box<dyn std::error::Error>>;
@@ -187,7 +190,8 @@ impl<MC: MinerConfig + Send + Sync + 'static> MultiBlockClient<Client, MC, Stora
     }
 }
 
-impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static, S: StorageTrait + From<Storage> + 'static> MultiBlockClientTrait<C, MC, S> for MultiBlockClient<C, MC, S> {
+#[async_trait::async_trait]
+impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static, S: StorageTrait + From<Storage> + Send + Sync + 'static> MultiBlockClientTrait<C, MC, S> for MultiBlockClient<C, MC, S> {
     async fn get_storage(&self, block: Option<Hash>) -> Result<S, Box<dyn std::error::Error>> {
         let storage = self.client.get_storage(block).await?;
         Ok(S::from(storage))

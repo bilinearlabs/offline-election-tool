@@ -3,15 +3,13 @@ use jsonrpsee_core::traits::ToRpcParams;
 use jsonrpsee_core::ClientError;
 use jsonrpsee_ws_client::{WsClient, WsClientBuilder};
 use mockall::automock;
-use tracing::error;
 
 use parity_scale_codec::{Decode, Encode};
 use serde_json::to_value;
 
 use sp_core::{H256};
-use sp_core::storage::{StorageData, StorageKey};
+use sp_core::storage::{StorageKey};
 use sp_core::hashing::{twox_128};
-use frame_support::{Twox64Concat, StorageHasher};
 use sp_version::RuntimeVersion;
 
 use crate::primitives::{AccountId, EraIndex};
@@ -44,14 +42,16 @@ pub struct NominationsLight<AccountId> {
 
 // Trait for jsonrpsee client operations to enable dependency injection for testing
 #[automock]
+#[async_trait::async_trait]
 pub trait RpcClient: Send + Sync {
     async fn rpc_request<T, P>(&self, method: &str, params: P) -> Result<T, ClientError>
-    where
-        T: serde::de::DeserializeOwned + 'static,
-        P: ToRpcParams + Send + 'static;
-}
+        where
+            T: serde::de::DeserializeOwned + 'static,
+            P: ToRpcParams + Send + 'static;
+    }
 
 // Implementation of RpcClient for WsClient
+#[async_trait::async_trait]
 impl RpcClient for WsClient {
     async fn rpc_request<T, P>(&self, method: &str, params: P) -> Result<T, ClientError>
     where
@@ -63,6 +63,7 @@ impl RpcClient for WsClient {
 }
 
 #[automock]
+#[async_trait::async_trait]
 pub trait RawClientTrait<C: RpcClient + Send + Sync + 'static> {
     async fn get_runtime_version(&self) -> Result<RuntimeVersion, Box<dyn std::error::Error>>;
     async fn get_keys_paged(&self, prefix: StorageKey, count: u32, start_key: Option<StorageKey>, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>>;
@@ -89,33 +90,6 @@ impl RawClient<WsClient> {
 }
 
 impl<C: RpcClient> RawClient<C> {
-    async fn read<T: Decode>(&self, key: StorageKey, at: Option<H256>) -> Result<Option<T>, Box<dyn std::error::Error>> {
-        let serialized_key = to_value(key).expect("StorageKey serialization infallible");
-        let at_val = to_value(at).expect("Block hash serialization infallible");
-        let raw: Result<Option<StorageData>, ClientError> = self.client
-            .rpc_request("state_getStorage", (serialized_key, at_val))
-            .await;
-
-        if raw.is_err() {
-            error!("Storage read error: {:?}", raw.err().unwrap());
-            return Err("Storage read error".into());
-        }
-
-        match raw.unwrap() {
-            None => Ok(None),
-            Some(data) => {
-                let encoded = data.0;
-                match <T as Decode>::decode(&mut encoded.as_slice()) {
-                    Ok(value) => Ok(Some(value)),
-                    Err(e) => {
-                        error!("Decode error: {:?}", e);
-                        Err("Decode error".into())
-                    }
-                }
-            }
-        }
-    }
-
     fn module_prefix(&self, module: &[u8], storage: &[u8]) -> Vec<u8> {
         let module_hash = twox_128(module);
         let storage_hash = twox_128(storage);
@@ -128,39 +102,6 @@ impl<C: RpcClient> RawClient<C> {
     fn value_key(&self, module: &[u8], storage: &[u8]) -> StorageKey {
         StorageKey(self.module_prefix(module, storage))
     }
-
-    fn map_key<H: StorageHasher>(&self, module: &[u8], storage: &[u8], key: &[u8]) -> StorageKey {
-        let prefix = self.module_prefix(module, storage);
-        let key_hash = H::hash(key);
-        let mut final_key = Vec::with_capacity(prefix.len() + key_hash.as_ref().len());
-        final_key.extend_from_slice(&prefix);
-        final_key.extend_from_slice(key_hash.as_ref());
-        StorageKey(final_key)
-    }
-
-    fn double_map_key(&self, module: &[u8], storage: &[u8], key1: &[u8], key2: &[u8]) -> StorageKey {
-        let prefix = self.module_prefix(module, storage);
-        let key1_hash = Twox64Concat::hash(key1);
-        let key2_hash = Twox64Concat::hash(key2);
-        let mut final_key = Vec::with_capacity(prefix.len() + key1_hash.len() + key2_hash.len());
-        final_key.extend_from_slice(&prefix);
-        final_key.extend_from_slice(&key1_hash);
-        final_key.extend_from_slice(&key2_hash);
-        StorageKey(final_key)
-    }
-
-    fn triple_map_key(&self, module: &[u8], storage: &[u8], key1: &[u8], key2: &[u8], key3: &[u8]) -> StorageKey {
-        let prefix = self.module_prefix(module, storage);
-        let key1_hash = Twox64Concat::hash(key1);
-        let key2_hash = Twox64Concat::hash(key2);
-        let key3_hash = Twox64Concat::hash(key3);
-        let mut final_key = Vec::with_capacity(prefix.len() + key1_hash.len() + key2_hash.len() + key3_hash.len());
-        final_key.extend_from_slice(&prefix);
-        final_key.extend_from_slice(&key1_hash);
-        final_key.extend_from_slice(&key2_hash);
-        final_key.extend_from_slice(&key3_hash);
-        StorageKey(final_key)
-    }
     
     fn extract_key<T: Decode>(&self, key: &StorageKey, prefix_len: usize) -> Option<T> {
         if key.0.len() > prefix_len + 8 {
@@ -172,6 +113,7 @@ impl<C: RpcClient> RawClient<C> {
     }
 }
 
+#[async_trait::async_trait]
 impl<C: RpcClient + Send + Sync + 'static> RawClientTrait<C> for RawClient<C> {
     async fn get_runtime_version(&self) -> Result<RuntimeVersion, Box<dyn std::error::Error>> {
         let data: Result<RuntimeVersion, ClientError>  = self.client
@@ -256,12 +198,6 @@ mod tests {
     use super::*;
     use mockall::predicate::*;
     use serde_json::Value;
-    use sp_core::storage::StorageData;
-
-
-    fn create_test_account_id() -> AccountId {
-        AccountId::from([1u8; 32])
-    }
 
     #[tokio::test]
     async fn test_module_prefix() {
@@ -282,84 +218,6 @@ mod tests {
         let value_key = "69667818617339ad409c359884450f004348b9f44e633139d8a8187f4eead460";
         let value_key_storage = StorageKey(hex::decode(value_key).unwrap());
         assert_eq!(result, value_key_storage);
-    }
-
-    #[tokio::test]
-    async fn test_map_key() {
-        let mock_client = MockRpcClient::new();
-        let client = RawClient { client: mock_client };
-        let account_id = create_test_account_id();
-        let key = client.map_key::<Twox64Concat>(b"TestModule", b"TestStorage", &account_id.encode());
-        
-        let prefix = hex::decode("69667818617339ad409c359884450f004348b9f44e633139d8a8187f4eead460").unwrap();
-        let key_hash = hex::decode("0d052d00259f2a8f0101010101010101010101010101010101010101010101010101010101010101").unwrap();
-
-        let mut final_key = Vec::with_capacity(prefix.len() + key_hash.len());
-        final_key.extend_from_slice(&prefix);
-        final_key.extend_from_slice(&key_hash);
-        let final_key_storage = StorageKey(final_key);
-        assert_eq!(key, final_key_storage);
-    }
-
-    #[tokio::test]
-    async fn test_double_map_key() {
-        let mock_client = MockRpcClient::new();
-        let client = RawClient { client: mock_client };
-        let account_id = create_test_account_id();
-        let key = client.double_map_key(b"TestModule", b"TestStorage", &account_id.encode(), &account_id.encode());
-        
-        let prefix = hex::decode("69667818617339ad409c359884450f004348b9f44e633139d8a8187f4eead460").unwrap();
-        let key_hash = hex::decode("0d052d00259f2a8f0101010101010101010101010101010101010101010101010101010101010101").unwrap();
-        let mut final_key = Vec::with_capacity(prefix.len() + key_hash.len()*2);
-        final_key.extend_from_slice(&prefix);
-        final_key.extend_from_slice(&key_hash);
-        final_key.extend_from_slice(&key_hash);
-        let final_key_storage = StorageKey(final_key);
-        assert_eq!(key, final_key_storage);
-    }
-
-    #[tokio::test]
-    async fn test_triple_map_key() {
-        let mock_client = MockRpcClient::new();
-        let client = RawClient { client: mock_client };
-        let account_id = create_test_account_id();
-        let key = client.triple_map_key(b"TestModule", b"TestStorage", &account_id.encode(), &account_id.encode(), &account_id.encode());
-        
-        let prefix = hex::decode("69667818617339ad409c359884450f004348b9f44e633139d8a8187f4eead460").unwrap();
-        let key_hash = hex::decode("0d052d00259f2a8f0101010101010101010101010101010101010101010101010101010101010101").unwrap();
-        let mut final_key = Vec::with_capacity(prefix.len() + key_hash.len()*3);
-        final_key.extend_from_slice(&prefix);
-        final_key.extend_from_slice(&key_hash);
-        final_key.extend_from_slice(&key_hash);
-        final_key.extend_from_slice(&key_hash);
-        let final_key_storage = StorageKey(final_key);
-        assert_eq!(key, final_key_storage);
-    }
-
-    #[tokio::test]
-    async fn test_read_success() {
-        let mut mock_client = MockRpcClient::new();
-        
-        // Create properly SCALE-encoded data
-        let test_data = vec![1u8, 2u8, 3u8];
-        let test_data_for_mock = test_data.clone();
-        
-        let key = StorageKey(vec![1u8; 32]);
-        let params = (to_value(key.clone()).unwrap(), to_value(None::<H256>).unwrap());
-        mock_client
-            .expect_rpc_request()
-            .with(eq("state_getStorage"), eq(params))
-            .times(1)
-            .returning(move |_, _| Ok(Some(StorageData(test_data_for_mock.encode()))));
-
-        let client = RawClient { client: mock_client };
-        
-        let result = client.read::<Vec<u8>>(key, None).await;
-
-        println!("Result: {:?}", result);
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some(test_data));
     }
 
     #[tokio::test]

@@ -6,7 +6,8 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
 use crate::api::routes::root;
-use crate::api::services::{SnapshotServiceImpl, SimulateServiceImpl};
+use crate::simulate::{SimulateService, SimulateServiceImpl};
+use crate::snapshot::{SnapshotService, SnapshotServiceImpl};
 use crate::models::{Chain, Algorithm};
 use crate::multi_block_state_client::{MultiBlockClient, MultiBlockClientTrait};
 use crate::primitives::Storage;
@@ -197,20 +198,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let election_result = with_miner_config!(chain, {
                 let multi_block_client = MultiBlockClient::<Client, MinerConfig, Storage>::new(subxt_client.clone());
                 let storage = multi_block_client.get_storage(block).await?;
-                // print phase
+                
                 let phase = multi_block_client.get_phase(&storage).await?;
                 info!("Phase: {:?}", phase);
-                
-                simulate::simulate(
-                    &multi_block_client,
-                    &raw_client,
-                    block,
-                    desired_validators,
-                    apply_reduce,
-                    manual_override,
-                    min_nominator_bond,
-                    min_validator_bond,
-                ).await
+                let simulate_service = SimulateServiceImpl::new(Arc::new(multi_block_client), Arc::new(raw_client));
+
+                simulate_service.simulate(block, desired_validators, apply_reduce, manual_override, min_nominator_bond, min_validator_bond).await
             });
             if election_result.is_err() {  
                 return Err(format!("Error in election simulation -> {}", election_result.err().unwrap()).into());
@@ -227,7 +220,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("Taking snapshot...");
             let snapshot = with_miner_config!(chain, {
                 let multi_block_client = MultiBlockClient::<Client, MinerConfig, Storage>::new(subxt_client.clone());
-                snapshot::build(&multi_block_client, &raw_client, block).await
+                let snapshot_service = SnapshotServiceImpl::new(Arc::new(multi_block_client), Arc::new(raw_client));
+                snapshot_service.build(block).await
             });
             if snapshot.is_err() {
                 return Err(format!("Error generating snapshot -> {}", snapshot.err().unwrap()).into());
@@ -241,14 +235,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             with_miner_config!(chain, {
                 let multi_block_client = Arc::new(MultiBlockClient::<Client, MinerConfig, Storage>::new(subxt_client.clone()));
                 let raw_client_arc = Arc::new(raw_client);
-                let simulate_service = Arc::new(SimulateServiceImpl {
-                    raw_state_client: raw_client_arc.clone(),
-                    multi_block_state_client: multi_block_client.clone(),
-                });
-                let snapshot_service = Arc::new(SnapshotServiceImpl {
-                    raw_state_client: raw_client_arc.clone(),
-                    multi_block_state_client: multi_block_client.clone(),
-                });
+                let simulate_service = Arc::new(SimulateServiceImpl::new(multi_block_client.clone(), raw_client_arc.clone()));
+                let snapshot_service = Arc::new(SnapshotServiceImpl::new(multi_block_client.clone(), raw_client_arc.clone()));
                 let router = root::routes(simulate_service, snapshot_service, chain);
                 axum::serve(listener, router)
                     .await

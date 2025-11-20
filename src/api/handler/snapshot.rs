@@ -2,12 +2,14 @@ use axum::{
     extract::{Query, State}, http::StatusCode, response::Json
 };
 
-use jsonrpsee_ws_client::WsClient;
-use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::{api::{error::AppError, routes::root::AppState, services::{SnapshotService, SimulateService}, utils}, multi_block_state_client::MultiBlockClient};
+use crate::{
+    api::{routes::root::AppState, utils},
+    snapshot::{SnapshotService},
+    simulate::{SimulateService},
+};
 
 #[derive(Deserialize)]
 pub struct SnapshotRequest {
@@ -54,36 +56,79 @@ Snap: SnapshotService + Send + Sync + 'static,
                 error: None,
             }
         ),
-        Err(e) => {
-            if let Some(app_error) = e.downcast_ref::<AppError>() {
-                match app_error {
-                    AppError::NotFound(msg) => (
-                        StatusCode::NOT_FOUND,
-                        SnapshotResponse {
-                            result: None,
-                            error: Some(msg.clone()),
-                        }
-                    ),
-                    AppError::Other(msg) => (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        SnapshotResponse {
-                            result: None,
-                            error: Some(msg.clone()),
-                        }
-                    ),
-                }
-            } else {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    SnapshotResponse {
-                        result: None,
-                        error: Some(e.to_string()),
-                    }
-                )
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            SnapshotResponse {
+                result: None,
+                error: Some(e.to_string()),
             }
-        }
+        ),
     };
 
     (status, Json(response))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::snapshot::MockSnapshotService;
+    use crate::models::Chain;
+    use crate::simulate::MockSimulateService;
+    use crate::models::{Snapshot, StakingConfig};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_snapshot_handler() {
+        let mut snapshot_service = MockSnapshotService::new();
+        snapshot_service.expect_build().returning(move |_| {
+            Ok(Snapshot {
+                validators: vec![],
+                nominators: vec![],
+                config: StakingConfig {
+                    desired_validators: 0,
+                    max_nominations: 0,
+                    min_nominator_bond: 0,
+                    min_validator_bond: 0,
+                },
+            })
+        });
+        let app_state = AppState {
+            simulate_service: Arc::new(MockSimulateService::new()),
+            snapshot_service: Arc::new(snapshot_service),
+            chain: Chain::Polkadot,
+        };
+        let app_state_extract = State(app_state);
+        let result = snapshot_handler(app_state_extract, Query(SnapshotRequest { block: None })).await;
+        assert_eq!(result.0, StatusCode::OK);
+    }  
+
+    #[tokio::test]
+    async fn test_snapshot_handler_invalid_block() {
+        let app_state = AppState {
+            simulate_service: Arc::new(MockSimulateService::new()),
+            snapshot_service: Arc::new(MockSnapshotService::new()),
+            chain: Chain::Polkadot,
+        };
+        let app_state_extract = State(app_state);
+        let result = snapshot_handler(app_state_extract, Query(SnapshotRequest { block: Some("invalid".to_string()) })).await;
+        assert_eq!(result.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_handler_error() {
+        let mut snapshot_service = MockSnapshotService::new();
+        snapshot_service.expect_build().returning(move |_| {
+            Err(Box::new(
+                std::io::Error::new(std::io::ErrorKind::Other, "Error")
+            ))
+        });
+        let app_state = AppState {
+            simulate_service: Arc::new(MockSimulateService::new()),
+            snapshot_service: Arc::new(snapshot_service),
+            chain: Chain::Polkadot,
+        };
+        let app_state_extract = State(app_state);
+        let result = snapshot_handler(app_state_extract, Query(SnapshotRequest { block: None })).await;
+        assert_eq!(result.0, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+}

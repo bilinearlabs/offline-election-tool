@@ -1,12 +1,12 @@
 use axum::{
     extract::{Query, State}, http::StatusCode, response::Json
 };
-use jsonrpsee_ws_client::WsClient;
-use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{error::AppError, routes::root::AppState, services::{SnapshotService, SimulateService}, utils}, miner_config, models::Algorithm, simulate::Override
+    api::{routes::root::AppState, utils}, miner_config, models::Algorithm, simulate::{Override},
+    simulate::{SimulateService},
+    snapshot::{SnapshotService}
 };
 
 #[derive(Deserialize)]
@@ -86,36 +86,74 @@ Snap: SnapshotService + Send + Sync + 'static,
                 error: None,
             }
         ),
-        Err(e) => {
-            if let Some(app_error) = e.downcast_ref::<AppError>() {
-                match app_error {
-                    AppError::NotFound(msg) => (
-                        StatusCode::NOT_FOUND,
-                        SimulateResponse {
-                            result: None,
-                            error: Some(msg.clone()),
-                        }
-                    ),
-                    AppError::Other(msg) => (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        SimulateResponse {
-                            result: None,
-                            error: Some(msg.clone()),
-                        }
-                    ),
-                }
-            } else {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    SimulateResponse {
-                        result: None,
-                        error: Some(e.to_string()),
-                    }
-                )
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            SimulateResponse {
+                result: None,
+                error: Some(e.to_string()),
             }
-        }
+        ),
     };
 
     (status, Json(response))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulate::MockSimulateService;
+    use crate::snapshot::MockSnapshotService;
+    use crate::models::Chain;
+    use crate::simulate::SimulationResult;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_simulate_handler() {
+        let mut simulate_service = MockSimulateService::new();
+        simulate_service.expect_simulate().returning( move |_, _, _, _, _, _| {
+            Ok(SimulationResult {
+                active_validators: vec![],
+            })
+        });
+        let snapshot_service = MockSnapshotService::new();
+        let app_state = AppState {
+            simulate_service: Arc::new(simulate_service),
+            snapshot_service: Arc::new(snapshot_service),
+            chain: Chain::Polkadot,
+        };
+        let app_state_extract = State(app_state);
+        let result = simulate_handler(app_state_extract, Query(SimulateRequestQuery { block: None }), Json(SimulateRequestBody { algorithm: None, iterations: None, reduce: None, desired_validators: None, max_nominations: None, min_nominator_bond: None, min_validator_bond: None, manual_override: None })).await;
+        assert_eq!(result.0, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_simulate_handler_invalid_block() {
+        let app_state = AppState {
+            simulate_service: Arc::new(MockSimulateService::new()),
+            snapshot_service: Arc::new(MockSnapshotService::new()),
+            chain: Chain::Polkadot,
+        };
+        let app_state_extract = State(app_state);
+        let result = simulate_handler(app_state_extract, Query(SimulateRequestQuery { block: Some("invalid".to_string()) }), Json(SimulateRequestBody { algorithm: None, iterations: None, reduce: None, desired_validators: None, max_nominations: None, min_nominator_bond: None, min_validator_bond: None, manual_override: None })).await;
+        assert_eq!(result.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_simulate_handler_error() {
+        let mut simulate_service = MockSimulateService::new();
+        simulate_service.expect_simulate().returning( move |_, _, _, _, _, _| {
+            Err(Box::new(
+                std::io::Error::new(std::io::ErrorKind::Other, "Error")
+            ))
+        });
+        let snapshot_service = MockSnapshotService::new();
+        let app_state = AppState {
+            simulate_service: Arc::new(simulate_service),
+            snapshot_service: Arc::new(snapshot_service),
+            chain: Chain::Polkadot,
+        };
+        let app_state_extract = State(app_state);
+        let result = simulate_handler(app_state_extract, Query(SimulateRequestQuery { block: None }), Json(SimulateRequestBody { algorithm: None, iterations: None, reduce: None, desired_validators: None, max_nominations: None, min_nominator_bond: None, min_validator_bond: None, manual_override: None })).await;
+        assert_eq!(result.0, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+}
