@@ -1,12 +1,13 @@
 use axum::{
     extract::{Query, State}, http::StatusCode, response::Json
 };
+use jsonrpsee_ws_client::WsClient;
+use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{error::AppError, routes::root::AppState, utils}, miner_config, models::Algorithm, primitives::AccountId, simulate::{self, Override}
+    api::{error::AppError, routes::root::AppState, services::{SnapshotService, SimulateService}, utils}, miner_config, models::Algorithm, simulate::Override
 };
-use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 
 #[derive(Deserialize)]
 pub struct SimulateRequestQuery {
@@ -33,20 +34,17 @@ pub struct SimulateResponse {
     pub error: Option<String>,
 }
 
-pub async fn simulate_handler<T: MinerConfig + Send + Sync + Clone>(
-    State(state): State<AppState<T>>,
+pub async fn simulate_handler<
+Sim: SimulateService + Send + Sync + 'static,
+Snap: SnapshotService + Send + Sync + 'static,
+>(
+    State(state): State<AppState<
+        Sim,
+        Snap,
+    >>,
     Query(params): Query<SimulateRequestQuery>,
     Json(body): Json<SimulateRequestBody>,
 ) -> (StatusCode, Json<SimulateResponse>)
-where
-    T: MinerConfig + 'static,
-    T: MinerConfig<AccountId = AccountId> + Send,
-    T::TargetSnapshotPerBlock: Send,
-    T::VoterSnapshotPerBlock: Send,
-    T::Pages: Send,
-    T::MaxVotesPerVoter: Send,
-    T::Solution: Send,
-    T::MaxBackersPerWinner: Send,
 {
     let block = match utils::parse_block(params.block) {
         Ok(block) => block,
@@ -58,8 +56,6 @@ where
         }
     };
     
-    let raw_state_client = state.raw_state_client.as_ref();
-    let multi_block_client = state.multi_block_state_client.as_ref();
     let algorithm = body.algorithm.unwrap_or(Algorithm::SeqPhragmen);
     let iterations = body.iterations.unwrap_or(0);
     let desired_validators = body.desired_validators;
@@ -72,9 +68,7 @@ where
     // Run simulation within task-local scope for algorithm, iterations, and max nominations
     // This ensures each concurrent request gets its own isolated value
     let result = miner_config::with_election_config(state.chain, algorithm, iterations, max_nominations, async {
-        simulate::simulate(
-            multi_block_client,
-            raw_state_client,
+        state.simulate_service.simulate(
             block,
             desired_validators,
             apply_reduce,

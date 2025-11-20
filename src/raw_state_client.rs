@@ -72,7 +72,7 @@ pub trait RawClientTrait<C: RpcClient + Send + Sync + 'static> {
     async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>>;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct RawClient<C: RpcClient> {
     client: C,
 }

@@ -2,13 +2,12 @@ use axum::{
     extract::{Query, State}, http::StatusCode, response::Json
 };
 
+use jsonrpsee_ws_client::WsClient;
+use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::{
-    api::{error::AppError, routes::root::AppState, utils}, primitives::{AccountId}, snapshot,
-};
-use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
+use crate::{api::{error::AppError, routes::root::AppState, services::{SnapshotService, SimulateService}, utils}, multi_block_state_client::MultiBlockClient};
 
 #[derive(Deserialize)]
 pub struct SnapshotRequest {
@@ -22,16 +21,16 @@ pub struct SnapshotResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
-pub async fn snapshot_handler<T: MinerConfig + Send + Sync + Clone>(
-    State(state): State<AppState<T>>,
+pub async fn snapshot_handler<
+Sim: SimulateService + Send + Sync + 'static,
+Snap: SnapshotService + Send + Sync + 'static,
+>(
+    State(state): State<AppState<
+        Sim,
+        Snap,
+    >>,
     Query(params): Query<SnapshotRequest>,
 ) -> (StatusCode, Json<SnapshotResponse>)
-where
-    T: MinerConfig<AccountId = AccountId> + Send,
-    T::TargetSnapshotPerBlock: Send,
-    T::VoterSnapshotPerBlock: Send,
-    T::Pages: Send,
-    T::MaxVotesPerVoter: Send,
 {
     let block = match utils::parse_block(params.block) {
         Ok(block) => block,
@@ -45,8 +44,7 @@ where
 
     info!("Block: {:?}", block);
 
-    let build_result = snapshot::build(
-        state.multi_block_state_client.as_ref(), state.raw_state_client.as_ref(), block).await;
+    let build_result = state.snapshot_service.build(block).await;
 
     let (status, response) = match build_result {
         Ok(result) => (

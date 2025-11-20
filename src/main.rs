@@ -6,10 +6,11 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
 use crate::api::routes::root;
+use crate::api::services::{SnapshotServiceImpl, SimulateServiceImpl};
 use crate::models::{Chain, Algorithm};
 use crate::multi_block_state_client::{MultiBlockClient, MultiBlockClientTrait};
 use crate::primitives::Storage;
-use crate::raw_state_client::{RawClientTrait};
+use crate::raw_state_client::RawClientTrait;
 use crate::subxt_client::Client;
 
 mod raw_state_client;
@@ -236,11 +237,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Action::Server { address } => {
             info!("Starting server on {}", address);
-            let storage_client = Arc::new(raw_client);
             let listener = tokio::net::TcpListener::bind(address).await?;
             with_miner_config!(chain, {
                 let multi_block_client = Arc::new(MultiBlockClient::<Client, MinerConfig, Storage>::new(subxt_client.clone()));
-                let router = root::routes::<MinerConfig>(storage_client, multi_block_client, chain);
+                let raw_client_arc = Arc::new(raw_client);
+                let simulate_service = Arc::new(SimulateServiceImpl {
+                    raw_state_client: raw_client_arc.clone(),
+                    multi_block_state_client: multi_block_client.clone(),
+                });
+                let snapshot_service = Arc::new(SnapshotServiceImpl {
+                    raw_state_client: raw_client_arc.clone(),
+                    multi_block_state_client: multi_block_client.clone(),
+                });
+                let router = root::routes(simulate_service, snapshot_service, chain);
                 axum::serve(listener, router)
                     .await
                     .unwrap_or_else(|e| panic!("Error starting server: {}", e));

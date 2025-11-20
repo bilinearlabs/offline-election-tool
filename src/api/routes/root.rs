@@ -1,69 +1,82 @@
 use std::sync::Arc;
-use crate::{models::Chain, multi_block_state_client::MultiBlockClient, primitives::{AccountId, Storage}, raw_state_client::RawClient, subxt_client::Client};
-use jsonrpsee_ws_client::WsClient;
+use crate::{api::services::{SnapshotServiceImpl, SimulateServiceImpl}, models::Chain};
 use axum::{
     Router,
     routing::{IntoMakeService, get, post},
 };
-use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use tower_http::trace::TraceLayer;
 
 use crate::api::handler::{simulate, snapshot};
+use crate::api::services::{SnapshotService, SimulateService};
 
-pub struct AppState<T: MinerConfig + Send + Sync + Clone> 
-where
-    T: MinerConfig<AccountId = AccountId> + Send,
-    <T as MinerConfig>::TargetSnapshotPerBlock: Send,
-    <T as MinerConfig>::VoterSnapshotPerBlock: Send,
-    <T as MinerConfig>::Pages: Send,
-    <T as MinerConfig>::MaxVotesPerVoter: Send,
-    T: Send + Sync + 'static,
-{
-    pub raw_state_client: Arc<RawClient<WsClient>>,
-    pub multi_block_state_client: Arc<MultiBlockClient<Client, T, Storage>>,
+pub struct AppState<
+    Sim: SimulateService + Send + Sync + 'static,
+    Snap: SnapshotService + Send + Sync + 'static,
+> {
+    pub simulate_service: Arc<Sim>,
+    pub snapshot_service: Arc<Snap>,
     pub chain: Chain,
 }
 
-impl<T: MinerConfig + Send + Sync + Clone> Clone for AppState<T>
-where
-    T: MinerConfig<AccountId = AccountId> + Send,
-    T::TargetSnapshotPerBlock: Send,
-    T::VoterSnapshotPerBlock: Send,
-    T::Pages: Send,
-    T::MaxVotesPerVoter: Send,
-    T::MaxBackersPerWinner: Send,
-    T: Send + Sync + 'static,
-{
+impl<Sim: SimulateService + Send + Sync + 'static, Snap: SnapshotService + Send + Sync + 'static> Clone for AppState<Sim, Snap> {
     fn clone(&self) -> Self {
         Self {
-            raw_state_client: self.raw_state_client.clone(),
-            multi_block_state_client: self.multi_block_state_client.clone(),
+            simulate_service: self.simulate_service.clone(),
+            snapshot_service: self.snapshot_service.clone(),
             chain: self.chain.clone(),
         }
     }
 }
 
-pub fn routes<T: MinerConfig + Send + Sync + Clone + 'static>(raw_state_client: Arc<RawClient<WsClient>>, multi_block_state_client: Arc<MultiBlockClient<Client, T, Storage>>, chain: Chain) -> IntoMakeService<Router>
-where
-    T: MinerConfig<AccountId = AccountId> + Send,
-    T::TargetSnapshotPerBlock: Send,
-    T::VoterSnapshotPerBlock: Send,
-    T::Pages: Send,
-    T::MaxVotesPerVoter: Send,
-    T::Solution: Send,
-    T::MaxBackersPerWinner: Send,
-    T::MaxWinnersPerPage: Send,
+pub fn routes<
+Sim: SimulateService + Send + Sync + 'static,
+Snap: SnapshotService + Send + Sync + 'static,
+>(
+    simulate_service: Arc<Sim>,
+    snapshot_service: Arc<Snap>,
+    chain: Chain,
+) -> IntoMakeService<Router>
 {
+
+    
     let app_state = AppState {
-        raw_state_client,
-        multi_block_state_client,
+        simulate_service,
+        snapshot_service,
         chain,
     };
     
     let app_router = Router::new()
-        .route("/simulate", post(simulate::simulate_handler::<T>))
-        .route("/snapshot", get(snapshot::snapshot_handler::<T>))
+        .route("/simulate", post(simulate::simulate_handler))
+        .route("/snapshot", get(snapshot::snapshot_handler::<Sim, Snap>))
         .with_state(app_state)
         .layer(TraceLayer::new_for_http());
     app_router.into_make_service()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockall::mock;
+    use mockall::predicate::*;
+    use axum_test::TestServer;
+    use crate::miner_config::initialize_runtime_constants;
+    use crate::multi_block_state_client::MockMultiBlockClientTrait;
+    use crate::raw_state_client::MockRawClientTrait;
+    use crate::api::services::{MockSimulateService, MockSnapshotService};
+
+    #[tokio::test]
+    async fn test_routes() {
+        initialize_runtime_constants();
+        let simulate_service = Arc::new(MockSimulateService::new());
+        let snapshot_service = Arc::new(MockSnapshotService::new());
+        let app_service = routes(
+            simulate_service,
+            snapshot_service,
+            Chain::Polkadot,
+        );
+        let client = TestServer::new(app_service);
+        assert!(client.is_ok());
+        let client = client.unwrap();
+        assert!(client.is_running());
+    }
 }
