@@ -52,7 +52,7 @@ WORKDIR /app
 
 # Run as non-root
 RUN useradd -u 10001 -r -s /usr/sbin/nologin appuser
-COPY --from=builder /app/target/release/offline-election-tool /app/offline-election-tool
+COPY --from=builder /app/target/*/release/offline-election-tool /app/offline-election-tool
 RUN chmod +x /app/offline-election-tool && chown appuser:appuser /app/offline-election-tool
 USER appuser
 
