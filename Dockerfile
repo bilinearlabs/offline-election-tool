@@ -35,9 +35,7 @@ COPY . .
 # Cache cargo artifacts across builds; keep target cache for faster incremental rebuilds
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
-    cargo build --release --bin offline-election-tool && \
-    cp target/*/release/offline-election-tool /offline-election-tool
+    cargo install --path . --locked --root /app
 
 # Optionally strip symbols to shrink the binary
 RUN strip target/release/offline-election-tool || true
@@ -53,7 +51,7 @@ WORKDIR /app
 
 # Run as non-root
 RUN useradd -u 10001 -r -s /usr/sbin/nologin appuser
-COPY --from=builder /offline-election-tool /app/offline-election-tool
+COPY --from=builder /app/bin/offline-election-tool /app/offline-election-tool
 RUN chmod +x /app/offline-election-tool && chown appuser:appuser /app/offline-election-tool
 USER appuser
 
