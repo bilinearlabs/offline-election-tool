@@ -19,11 +19,19 @@ use crate::{
 
 #[automock]
 #[async_trait::async_trait]
-pub trait SnapshotService: Send + Sync {
+pub trait SnapshotService<MC, S>: Send + Sync
+where
+    MC: MinerConfig + Send + Sync + 'static,
+    S: StorageTrait + From<Storage> + 'static,
+{
     async fn build(
         &self,
         block: Option<H256>,
     ) -> Result<Snapshot, Box<dyn std::error::Error>>;
+    async fn get_snapshot_data_from_multi_block(
+        &self,
+        block_details: &BlockDetails<S>,
+    ) -> Result<(ElectionSnapshotPage<MC>, StakingConfig), Box<dyn std::error::Error>>;
 }
 
 pub struct SnapshotServiceImpl<
@@ -66,7 +74,7 @@ impl<
     MC: MinerConfig + Send + Sync + Clone + 'static,
     MBC: MultiBlockClientTrait<CC, MC, S> + Send + Sync + 'static,
     RawC: RawClientTrait<RC> + Send + Sync + 'static,
-> SnapshotService for SnapshotServiceImpl<RC, CC, S, MC, MBC, RawC>
+> SnapshotService<MC, S> for SnapshotServiceImpl<RC, CC, S, MC, MBC, RawC>
 where
     MC: MinerConfig<AccountId = AccountId> + Send,
     MC::TargetSnapshotPerBlock: Send,
@@ -79,9 +87,8 @@ where
         block: Option<H256>,
     ) -> Result<Snapshot, Box<dyn std::error::Error>> {
         let multi_block_state_client = self.multi_block_state_client.as_ref();
-        let raw_state_client = self.raw_state_client.as_ref();
         let block_details = multi_block_state_client.get_block_details(block).await?;
-        let (snapshot, staking_config) = get_snapshot_data_from_multi_block(multi_block_state_client, raw_state_client, &block_details)
+        let (snapshot, staking_config) = self.get_snapshot_data_from_multi_block(&block_details)
             .await
             .map_err(|e| format!("Error getting snapshot data: {}", e))?;
 
@@ -124,133 +131,124 @@ where
         
         Ok(Snapshot { validators, nominators, config: staking_config })
     }
-}
 
-pub async fn get_snapshot_data_from_multi_block<
-    RC: RpcClient + Send + Sync + 'static,
-    CC: ChainClientTrait + Send + Sync + 'static,
-    MC: MinerConfig + Send + Sync + 'static,
-    MBC: MultiBlockClientTrait<CC, MC, S> + Send + Sync + 'static,
-    RawC: RawClientTrait<RC> + Send + Sync + 'static,
-    S: StorageTrait + From<Storage> + 'static,
->(
-    client: &MBC,
-    raw_client: &RawC,
-    block_details: &BlockDetails<S>,
-) -> Result<(ElectionSnapshotPage<MC>, StakingConfig), Box<dyn std::error::Error>>
-where
-    AccountId: Send,
-    MC: Send + Sync + 'static,
-{
-    let staking_config = get_staking_config_from_multi_block(client, block_details).await?;
-    if block_details.phase.has_snapshot() {
-        let mut voters = Vec::new();
-        for page in 0..block_details.n_pages {
-            let voters_page = client.fetch_paged_voter_snapshot(&block_details.storage, block_details.round, page).await?;
-            voters.push(voters_page);
-        }
-
-        let target_snapshot = client.fetch_paged_target_snapshot(&block_details.storage, block_details.round, block_details.n_pages - 1).await?;
-
-        return Ok((
-            ElectionSnapshotPage::<MC> {
-                voters,
-                targets: target_snapshot,
-            },
-            staking_config));
-    }
-    info!("No snapshot found, getting validators and nominators from staking storage");
-
-    let nominators = raw_client.get_nominators(block_details.block_hash).await?;
-    let mut validators = raw_client.get_validators(block_details.block_hash).await?;
-
-    // Prepare data for ElectionSnapshotPage
-    let min_nominator_bond = staking_config.min_nominator_bond;
-
-    let nominator_futures: Vec<_> = nominators.into_iter().map(|nominator| {
-        let storage = &block_details.storage;
-        async move {
-            let nominations = client.get_nominator(storage, nominator.clone()).await
-                .map_err(|e| e.to_string())?
-                .filter(|n| !n.suppressed);
-            let nominations = match nominations {
-                Some(n) => n,
-                None => return Ok::<Option<VoterData<MC>>, String>(None),
-            };
-            let controller = client.get_controller_from_stash(storage, nominator.clone()).await
-                .map_err(|e| e.to_string())?;
-            if controller.is_none() {
-                return Ok(None);
+    async fn get_snapshot_data_from_multi_block(
+        &self,
+        block_details: &BlockDetails<S>,
+    ) -> Result<(ElectionSnapshotPage<MC>, StakingConfig), Box<dyn std::error::Error>>
+    {
+        let client = self.multi_block_state_client.as_ref();
+        let staking_config = get_staking_config_from_multi_block(client, block_details).await?;
+        if block_details.phase.has_snapshot() {
+            let mut voters = Vec::new();
+            for page in 0..block_details.n_pages {
+                let voters_page = client.fetch_paged_voter_snapshot(&block_details.storage, block_details.round, page).await?;
+                voters.push(voters_page);
             }
-            let controller = controller.unwrap();
-            let stake = client.ledger(storage, controller).await
-                .map_err(|e| e.to_string())?
-                .filter(|s| s.active >= min_nominator_bond);
-            let stake = match stake {
-                Some(s) => s,
-                None => return Ok(None),
-            };
-            // Trim targets to max nominations per voter
-            let max_nominations = MC::MaxVotesPerVoter::get();
-            let mut targets = nominations.targets.clone();
-            targets.truncate(max_nominations as usize);
-            let targets_mc = BoundedVec::try_from(
-                targets.into_iter().map(|t| t.into()).collect::<Vec<AccountId>>()
-            ).map_err(|_| "Too many targets in voter".to_string())?;
-            Ok(Some((nominator, stake.active as u64, targets_mc)))
-        }
-    }).collect();
-    
-    let voters: Vec<VoterData<MC>> = join_all(nominator_futures)
-        .await
-        .into_iter()
-        .filter_map(|result| result.ok().flatten())
-        .collect();
 
-    // Filter validators by min validator bond if > 0 requesting for ledger
-    let min_validator_bond = staking_config.min_validator_bond;
-    
-    if min_validator_bond > 0 {
-        let storage = &block_details.storage;
-        let validators_futures: Vec<_> = validators.into_iter().map(|validator| {
-            let client = client;
+            let target_snapshot = client.fetch_paged_target_snapshot(&block_details.storage, block_details.round, block_details.n_pages - 1).await?;
+
+            return Ok((
+                ElectionSnapshotPage::<MC> {
+                    voters,
+                    targets: target_snapshot,
+                },
+                staking_config));
+        }
+        info!("No snapshot found, getting validators and nominators from staking storage");
+
+        let raw_client = self.raw_state_client.as_ref();
+        let nominators = raw_client.get_nominators(block_details.block_hash).await?;
+        let mut validators = raw_client.get_validators(block_details.block_hash).await?;
+
+        // Prepare data for ElectionSnapshotPage
+        let min_nominator_bond = staking_config.min_nominator_bond;
+
+        let nominator_futures: Vec<_> = nominators.into_iter().map(|nominator| {
+            let storage = &block_details.storage;
             async move {
-                let controller = client.get_controller_from_stash(storage, validator.clone()).await
+                let nominations = client.get_nominator(storage, nominator.clone()).await
+                    .map_err(|e| e.to_string())?
+                    .filter(|n| !n.suppressed);
+                let nominations = match nominations {
+                    Some(n) => n,
+                    None => return Ok::<Option<VoterData<MC>>, String>(None),
+                };
+                let controller = client.get_controller_from_stash(storage, nominator.clone()).await
                     .map_err(|e| e.to_string())?;
                 if controller.is_none() {
                     return Ok(None);
                 }
                 let controller = controller.unwrap();
-                let has_sufficient_bond = client.ledger(storage, controller).await
+                let stake = client.ledger(storage, controller).await
                     .map_err(|e| e.to_string())?
-                    .map_or(false, |l| l.active >= min_validator_bond);
-                    Ok::<Option<AccountId>, String>(has_sufficient_bond.then_some(validator))
+                    .filter(|s| s.active >= min_nominator_bond);
+                let stake = match stake {
+                    Some(s) => s,
+                    None => return Ok(None),
+                };
+                // Trim targets to max nominations per voter
+                let max_nominations = MC::MaxVotesPerVoter::get();
+                let mut targets = nominations.targets.clone();
+                targets.truncate(max_nominations as usize);
+                let targets_mc = BoundedVec::try_from(
+                    targets.into_iter().map(|t| t.into()).collect::<Vec<AccountId>>()
+                ).map_err(|_| "Too many targets in voter".to_string())?;
+                Ok(Some((nominator, stake.active as u64, targets_mc)))
             }
         }).collect();
-        validators = join_all(validators_futures)
+        
+        let voters: Vec<VoterData<MC>> = join_all(nominator_futures)
             .await
             .into_iter()
             .filter_map(|result| result.ok().flatten())
             .collect();
-    }
 
-    // Prepare data for ElectionSnapshotPage
-    // divide in pages
-    let voters: Vec<VoterSnapshotPage<MC>> = voters
-        .chunks(MC::VoterSnapshotPerBlock::get() as usize)
-        .map(|chunk| BoundedVec::try_from(chunk.to_vec()).map_err(|_| "Too many voters in chunk"))
-        .collect::<Result<Vec<_>, _>>()?;
+        // Filter validators by min validator bond if > 0 requesting for ledger
+        let min_validator_bond = staking_config.min_validator_bond;
+        
+        if min_validator_bond > 0 {
+            let storage = &block_details.storage;
+            let validators_futures: Vec<_> = validators.into_iter().map(|validator| {
+                let client = client;
+                async move {
+                    let controller = client.get_controller_from_stash(storage, validator.clone()).await
+                        .map_err(|e| e.to_string())?;
+                    if controller.is_none() {
+                        return Ok(None);
+                    }
+                    let controller = controller.unwrap();
+                    let has_sufficient_bond = client.ledger(storage, controller).await
+                        .map_err(|e| e.to_string())?
+                        .map_or(false, |l| l.active >= min_validator_bond);
+                        Ok::<Option<AccountId>, String>(has_sufficient_bond.then_some(validator))
+                }
+            }).collect();
+            validators = join_all(validators_futures)
+                .await
+                .into_iter()
+                .filter_map(|result| result.ok().flatten())
+                .collect();
+        }
 
-    let targets = TargetSnapshotPage::<MC>::try_from(
-        validators.into_iter().map(|v| v.into()).collect::<Vec<AccountId>>()
-    ).map_err(|_| "Too many targets")?;
+        // Prepare data for ElectionSnapshotPage
+        // divide in pages
+        let voters: Vec<VoterSnapshotPage<MC>> = voters
+            .chunks(MC::VoterSnapshotPerBlock::get() as usize)
+            .map(|chunk| BoundedVec::try_from(chunk.to_vec()).map_err(|_| "Too many voters in chunk"))
+            .collect::<Result<Vec<_>, _>>()?;
 
-    let election_snapshot_page = ElectionSnapshotPage::<MC> {
-        voters,
-        targets,
-    };
+        let targets = TargetSnapshotPage::<MC>::try_from(
+            validators.into_iter().map(|v| v.into()).collect::<Vec<AccountId>>()
+        ).map_err(|_| "Too many targets")?;
 
-    Ok((election_snapshot_page, staking_config))
+        let election_snapshot_page = ElectionSnapshotPage::<MC> {
+            voters,
+            targets,
+        };
+
+        Ok((election_snapshot_page, staking_config))
+}
 }
 
 pub async fn get_staking_config_from_multi_block<
@@ -371,8 +369,10 @@ mod tests {
             .returning(|_storage: &MockDummyStorage, _round: u32, _page: u32| Ok(TargetSnapshotPage::<PolkadotMinerConfig>::new()));
 
         let raw_client = MockRawClientTrait::<MockRpcClient>::new();
+
+        let snapshot_service = SnapshotServiceImpl::new(Arc::new(mock_client), Arc::new(raw_client));
             
-        let result = get_snapshot_data_from_multi_block(&mock_client, &raw_client, &BlockDetails::<MockDummyStorage> {
+        let result = snapshot_service.get_snapshot_data_from_multi_block(&BlockDetails::<MockDummyStorage> {
             block_hash: Some(Hash::zero()),
             phase: Phase::Snapshot(0),
             round: 1,
@@ -437,7 +437,8 @@ mod tests {
                 unlocking: vec![],
             })));
 
-        let result = get_snapshot_data_from_multi_block(&mock_client, &raw_client, &BlockDetails::<MockDummyStorage> {
+        let snapshot_service = SnapshotServiceImpl::new(Arc::new(mock_client), Arc::new(raw_client));
+        let result = snapshot_service.get_snapshot_data_from_multi_block(&BlockDetails::<MockDummyStorage> {
             block_hash: Some(Hash::zero()),
             phase: Phase::Snapshot(10),
             round: 1,
@@ -527,7 +528,8 @@ mod tests {
                 unlocking: vec![],
             })));
 
-        let result = get_snapshot_data_from_multi_block(&mock_client, &raw_client, &BlockDetails::<MockDummyStorage> {
+        let snapshot_service = SnapshotServiceImpl::new(Arc::new(mock_client), Arc::new(raw_client));
+        let result = snapshot_service.get_snapshot_data_from_multi_block(&BlockDetails::<MockDummyStorage> {
             block_hash: Some(Hash::zero()),
             phase: Phase::Snapshot(10),
             round: 1,

@@ -1,12 +1,11 @@
 use axum::{
     extract::{Query, State}, http::StatusCode, response::Json
 };
+use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{routes::root::AppState, utils}, miner_config, models::Algorithm, simulate::{Override},
-    simulate::{SimulateService},
-    snapshot::{SnapshotService}
+    api::{routes::root::AppState, utils}, miner_config, models::Algorithm, multi_block_state_client::StorageTrait, primitives::Storage, simulate::{Override, SimulateService}, snapshot::SnapshotService
 };
 
 #[derive(Deserialize)]
@@ -36,11 +35,15 @@ pub struct SimulateResponse {
 
 pub async fn simulate_handler<
 Sim: SimulateService + Send + Sync + 'static,
-Snap: SnapshotService + Send + Sync + 'static,
+Snap: SnapshotService<MC, S> + Send + Sync + 'static,
+MC: MinerConfig + Send + Sync + Clone + 'static,
+S: StorageTrait + From<Storage> + Clone + 'static,
 >(
     State(state): State<AppState<
         Sim,
         Snap,
+        MC,
+        S,
     >>,
     Query(params): Query<SimulateRequestQuery>,
     Json(body): Json<SimulateRequestBody>,
@@ -101,6 +104,7 @@ Snap: SnapshotService + Send + Sync + 'static,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::miner_config::polkadot::MinerConfig as PolkadotMinerConfig;
     use crate::simulate::MockSimulateService;
     use crate::snapshot::MockSnapshotService;
     use crate::models::Chain;
@@ -115,11 +119,12 @@ mod tests {
                 active_validators: vec![],
             })
         });
-        let snapshot_service = MockSnapshotService::new();
+        let snapshot_service: MockSnapshotService<PolkadotMinerConfig, Storage> = MockSnapshotService::new();
         let app_state = AppState {
             simulate_service: Arc::new(simulate_service),
             snapshot_service: Arc::new(snapshot_service),
             chain: Chain::Polkadot,
+            _phantom: std::marker::PhantomData,
         };
         let app_state_extract = State(app_state);
         let result = simulate_handler(app_state_extract, Query(SimulateRequestQuery { block: None }), Json(SimulateRequestBody { algorithm: None, iterations: None, reduce: None, desired_validators: None, max_nominations: None, min_nominator_bond: None, min_validator_bond: None, manual_override: None })).await;
@@ -128,10 +133,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_simulate_handler_invalid_block() {
+        let snapshot_service: MockSnapshotService<PolkadotMinerConfig, Storage> = MockSnapshotService::new();
         let app_state = AppState {
             simulate_service: Arc::new(MockSimulateService::new()),
-            snapshot_service: Arc::new(MockSnapshotService::new()),
+            snapshot_service: Arc::new(snapshot_service),
             chain: Chain::Polkadot,
+            _phantom: std::marker::PhantomData,
         };
         let app_state_extract = State(app_state);
         let result = simulate_handler(app_state_extract, Query(SimulateRequestQuery { block: Some("invalid".to_string()) }), Json(SimulateRequestBody { algorithm: None, iterations: None, reduce: None, desired_validators: None, max_nominations: None, min_nominator_bond: None, min_validator_bond: None, manual_override: None })).await;
@@ -146,11 +153,12 @@ mod tests {
                 std::io::Error::new(std::io::ErrorKind::Other, "Error")
             ))
         });
-        let snapshot_service = MockSnapshotService::new();
+        let snapshot_service: MockSnapshotService<PolkadotMinerConfig, Storage> = MockSnapshotService::new();
         let app_state = AppState {
             simulate_service: Arc::new(simulate_service),
             snapshot_service: Arc::new(snapshot_service),
             chain: Chain::Polkadot,
+            _phantom: std::marker::PhantomData,
         };
         let app_state_extract = State(app_state);
         let result = simulate_handler(app_state_extract, Query(SimulateRequestQuery { block: None }), Json(SimulateRequestBody { algorithm: None, iterations: None, reduce: None, desired_validators: None, max_nominations: None, min_nominator_bond: None, min_validator_bond: None, manual_override: None })).await;

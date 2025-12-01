@@ -34,9 +34,6 @@ pallet-election-provider-multi-block = "0.4.0"
 frame-election-provider-support = "43.0.0"
 axum-test = "18.2.1"
 
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-injectorpp = "0.4.0"
-
 [profile.dev]
 incremental = true
 

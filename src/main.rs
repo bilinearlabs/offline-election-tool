@@ -196,12 +196,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let min_validator_bond = simulate_args.min_validator_bond;
             
             let election_result = with_miner_config!(chain, {
-                let multi_block_client = MultiBlockClient::<Client, MinerConfig, Storage>::new(subxt_client.clone());
+                let multi_block_client = Arc::new(MultiBlockClient::<Client, MinerConfig, Storage>::new(subxt_client.clone()));
+                let raw_client_arc = Arc::new(raw_client);
                 let storage = multi_block_client.get_storage(block).await?;
-                
                 let phase = multi_block_client.get_phase(&storage).await?;
                 info!("Phase: {:?}", phase);
-                let simulate_service = SimulateServiceImpl::new(Arc::new(multi_block_client), Arc::new(raw_client));
+                let snapshot_service = Arc::new(SnapshotServiceImpl::new(multi_block_client.clone(), raw_client_arc.clone()));
+                let simulate_service = SimulateServiceImpl::new(multi_block_client.clone(), snapshot_service.clone());
 
                 simulate_service.simulate(block, desired_validators, apply_reduce, manual_override, min_nominator_bond, min_validator_bond).await
             });
@@ -235,8 +236,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             with_miner_config!(chain, {
                 let multi_block_client = Arc::new(MultiBlockClient::<Client, MinerConfig, Storage>::new(subxt_client.clone()));
                 let raw_client_arc = Arc::new(raw_client);
-                let simulate_service = Arc::new(SimulateServiceImpl::new(multi_block_client.clone(), raw_client_arc.clone()));
                 let snapshot_service = Arc::new(SnapshotServiceImpl::new(multi_block_client.clone(), raw_client_arc.clone()));
+                let simulate_service = Arc::new(SimulateServiceImpl::new(multi_block_client.clone(), snapshot_service.clone()));
                 let router = root::routes(simulate_service, snapshot_service, chain);
                 axum::serve(listener, router)
                     .await
