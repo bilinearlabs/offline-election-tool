@@ -209,7 +209,7 @@ pub struct MaxVotesPerVoter;
 pub struct DynamicSolver;
 
 // Helper to get current algorithm from task-local or fallback
-fn get_current_algorithm() -> Algorithm {
+pub fn get_current_algorithm() -> Algorithm {
 	ELECTION_CONFIG.try_with(|v| v.algorithm)
 		.unwrap_or_else(|_| ELECTION_CONFIG_FALLBACK.lock().unwrap().algorithm)
 }

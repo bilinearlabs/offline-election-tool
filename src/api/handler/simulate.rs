@@ -108,7 +108,7 @@ mod tests {
     use crate::simulate::MockSimulateService;
     use crate::snapshot::MockSnapshotService;
     use crate::models::Chain;
-    use crate::simulate::SimulationResult;
+    use crate::simulate::{RunParameters, SimulationResult};
     use std::sync::Arc;
 
     #[tokio::test]
@@ -116,6 +116,15 @@ mod tests {
         let mut simulate_service = MockSimulateService::new();
         simulate_service.expect_simulate().returning( move |_, _, _, _, _, _| {
             Ok(SimulationResult {
+                run_parameters: RunParameters {
+                    algorithm: Algorithm::SeqPhragmen,
+                    iterations: 0,
+                    reduce: false,
+                    max_nominations: 0,
+                    min_nominator_bond: 0,
+                    min_validator_bond: 0,
+                    desired_validators: 0,
+                },
                 active_validators: vec![],
             })
         });

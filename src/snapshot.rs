@@ -159,7 +159,7 @@ where
 
         let raw_client = self.raw_state_client.as_ref();
         let nominators = raw_client.get_nominators(block_details.block_hash).await?;
-        let mut validators = raw_client.get_validators(block_details.block_hash).await?;
+        let validators = raw_client.get_validators(block_details.block_hash).await?;
 
         // Prepare data for ElectionSnapshotPage
         let min_nominator_bond = staking_config.min_nominator_bond;
@@ -198,7 +198,7 @@ where
             }
         }).collect();
         
-        let voters: Vec<VoterData<MC>> = join_all(nominator_futures)
+        let mut voters: Vec<VoterData<MC>> = join_all(nominator_futures)
             .await
             .into_iter()
             .filter_map(|result| result.ok().flatten())
@@ -207,29 +207,51 @@ where
         // Filter validators by min validator bond if > 0 requesting for ledger
         let min_validator_bond = staking_config.min_validator_bond;
         
-        if min_validator_bond > 0 {
-            let storage = &block_details.storage;
-            let validators_futures: Vec<_> = validators.into_iter().map(|validator| {
-                let client = client;
-                async move {
-                    let controller = client.get_controller_from_stash(storage, validator.clone()).await
-                        .map_err(|e| e.to_string())?;
-                    if controller.is_none() {
-                        return Ok(None);
-                    }
-                    let controller = controller.unwrap();
-                    let has_sufficient_bond = client.ledger(storage, controller).await
-                        .map_err(|e| e.to_string())?
-                        .map_or(false, |l| l.active >= min_validator_bond);
-                        Ok::<Option<AccountId>, String>(has_sufficient_bond.then_some(validator))
+        // if min_validator_bond > 0 {
+        let storage = &block_details.storage;
+        let validators_futures: Vec<_> = validators.into_iter().map(|validator| {
+            let client = client;
+            async move {
+                let controller = client.get_controller_from_stash(storage, validator.clone()).await
+                    .map_err(|e| e.to_string())?;
+                if controller.is_none() {
+                    return Ok((None, None));
                 }
-            }).collect();
-            validators = join_all(validators_futures)
-                .await
-                .into_iter()
-                .filter_map(|result| result.ok().flatten())
-                .collect();
+                let controller = controller.unwrap();
+                let validator_ledger = client.ledger(storage, controller).await
+                    .map_err(|e| e.to_string())?;
+                let has_sufficient_bond = validator_ledger.clone().map_or(false, |l| l.active >= min_validator_bond);
+
+                // Add it to voters if it has sufficient bond
+                let has_sufficient_nominator_bond = validator_ledger.clone().map_or(false, |l| l.active >= min_nominator_bond);
+                let voter_data = if has_sufficient_nominator_bond {
+                    Some((validator.clone(), validator_ledger.unwrap().active as u64, BoundedVec::try_from(vec![validator.clone()]).map_err(|_| "Too many targets in voter")?))
+                } else {
+                    None
+                };
+
+                Ok::<(Option<AccountId>, Option<VoterData<MC>>), String>((has_sufficient_bond.then_some(validator), voter_data))
+            }
+        }).collect();
+        let results = join_all(validators_futures)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        
+        let mut targets: Vec<AccountId> = Vec::new();
+        for (validator, voter_data) in results {
+            if let Some(validator) = validator {
+                targets.push(validator);
+            }
+            if let Some(voter_data) = voter_data {
+                voters.push(voter_data);
+            }
         }
+        // }
+
+        // Sort voters by AccountId (first element of tuple)
+        voters.sort_by_key(|v| v.0.clone());
 
         // Prepare data for ElectionSnapshotPage
         // divide in pages
@@ -239,7 +261,7 @@ where
             .collect::<Result<Vec<_>, _>>()?;
 
         let targets = TargetSnapshotPage::<MC>::try_from(
-            validators.into_iter().map(|v| v.into()).collect::<Vec<AccountId>>()
+            targets.into_iter().map(|v| v.into()).collect::<Vec<AccountId>>()
         ).map_err(|_| "Too many targets")?;
 
         let election_snapshot_page = ElectionSnapshotPage::<MC> {
@@ -414,12 +436,12 @@ mod tests {
 
         raw_client
             .expect_get_validators()
-            .returning(|_at: Option<H256>| Ok(vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()]));
+            .returning(|_at: Option<H256>| Ok(vec![AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap()]));
 
         mock_client
             .expect_get_nominator()
             .returning(|_storage: &MockDummyStorage, _nominator: AccountId| Ok(Some(NominationsLight {
-                targets: vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()],
+                targets: vec![AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap()],
                 _submitted_in: 10,
                 suppressed: false,
             })));
@@ -432,6 +454,19 @@ mod tests {
             .expect_ledger()
             .returning(|_storage: &MockDummyStorage, _account: AccountId| Ok(Some(StakingLedger {
                 stash: AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+                total: 100,
+                active: 100,
+                unlocking: vec![],
+            })));
+        
+        mock_client
+        .expect_get_controller_from_stash()
+        .returning(|_storage: &MockDummyStorage, _stash: AccountId| Ok(Some(AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap())));
+
+        mock_client
+            .expect_ledger()
+            .returning(|_storage: &MockDummyStorage, _account: AccountId| Ok(Some(StakingLedger {
+                stash: AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap(),
                 total: 100,
                 active: 100,
                 unlocking: vec![],
@@ -450,15 +485,20 @@ mod tests {
 
         assert!(result.is_ok());
         let (snapshot, config) = result.unwrap();
-        let voter_targets = BoundedVec::try_from(vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()]).map_err(|_| "Too many targets in voter").unwrap();
+        let voter_targets = BoundedVec::try_from(vec![AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap()]).map_err(|_| "Too many targets in voter").unwrap();
         let voter = (AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
             100,
             voter_targets
         );
-        let voter_page: VoterSnapshotPage<PolkadotMinerConfig> = BoundedVec::try_from(vec![voter]).map_err(|_| "Too many voters in chunk").unwrap();
+        let validator_voter_targets = BoundedVec::try_from(vec![AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap()]).map_err(|_| "Too many targets in voter").unwrap();
+        let validator_voter = (AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap(),
+            100,
+            validator_voter_targets
+        );
+        let voter_page: VoterSnapshotPage<PolkadotMinerConfig> = BoundedVec::try_from(vec![validator_voter, voter]).map_err(|_| "Too many voters in chunk").unwrap();
         let voters = vec![voter_page];
 
-        let targets: TargetSnapshotPage<PolkadotMinerConfig> = BoundedVec::try_from(vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()]).map_err(|_| "Too many targets in voter").unwrap();
+        let targets: TargetSnapshotPage<PolkadotMinerConfig> = BoundedVec::try_from(vec![AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap()]).map_err(|_| "Too many targets in voter").unwrap();
 
         assert_eq!(snapshot.voters, voters);
         assert_eq!(snapshot.targets, targets);

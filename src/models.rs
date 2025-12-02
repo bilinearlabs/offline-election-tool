@@ -10,7 +10,7 @@ pub enum Chain {
     Substrate, // SS58 version 42
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum, Deserialize)]
+#[derive(Debug, Clone, Copy, clap::ValueEnum, Deserialize, Serialize)]
 pub enum Algorithm {
     SeqPhragmen,
     Phragmms,

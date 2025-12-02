@@ -14,12 +14,24 @@ use sp_runtime::Perbill;
 use tracing::info;
 use frame_support::BoundedVec;
 use mockall::automock;
-use crate::{multi_block_state_client::{MultiBlockClientTrait, StorageTrait, VoterData, VoterSnapshotPage}, primitives::Storage, snapshot::SnapshotService};
+use crate::{miner_config, models::Algorithm, multi_block_state_client::{MultiBlockClientTrait, StorageTrait, VoterData, VoterSnapshotPage}, primitives::Storage, snapshot::SnapshotService};
 
 use crate::{models::{Validator, ValidatorNomination}, multi_block_state_client::ChainClientTrait, primitives::AccountId};
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RunParameters {
+    pub algorithm: Algorithm,
+    pub iterations: usize,
+    pub reduce: bool,
+    pub max_nominations: u32,
+    pub min_nominator_bond: u128,
+    pub min_validator_bond: u128,
+    pub desired_validators: u32,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SimulationResult {
+    pub run_parameters: RunParameters,
     pub active_validators: Vec<Validator>
 }
 
@@ -103,6 +115,19 @@ where
     ) -> Result<SimulationResult, Box<dyn std::error::Error>> {
         let multi_block_state_client = self.multi_block_state_client.as_ref();
         let block_details = multi_block_state_client.get_block_details(block).await?;
+        let balancing_iter = miner_config::BalancingIterations::get();
+        let algorithm = miner_config::get_current_algorithm();
+        let max_nominations = miner_config::MaxVotesPerVoter::get();
+        let run_parameters = RunParameters {
+            algorithm: algorithm,
+            iterations: balancing_iter.unwrap_or(sp_npos_elections::BalancingConfig { iterations: 0, tolerance: 0 }).iterations,
+            reduce: apply_reduce,
+            max_nominations: max_nominations,
+            min_nominator_bond: min_nominator_bond.unwrap_or(0),
+            min_validator_bond: min_validator_bond.unwrap_or(0),
+            desired_validators: desired_validators.unwrap_or(block_details.desired_targets),
+        };        
+
         info!("Fetching snapshot data for election...");
         let (mut snapshot, staking_config) = self.snapshot_service.get_snapshot_data_from_multi_block(&block_details).await?;
 
@@ -320,6 +345,7 @@ where
             .map_err(|e| e.to_string())?;
 
         let simulation_result = SimulationResult {
+            run_parameters: run_parameters.clone(),
             active_validators
         };
 

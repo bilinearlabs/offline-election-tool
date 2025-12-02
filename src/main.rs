@@ -1,5 +1,5 @@
 use tracing::info;
-use sp_core::H256;
+use sp_core::{H256};
 use clap::{arg, command, Parser, Subcommand};
 use sp_core::crypto::set_default_ss58_version;
 use std::fs::File;
@@ -59,8 +59,8 @@ pub struct SimulateArgs {
     pub min_validator_bond: Option<u128>,
 
     /// Output file path (if not specified, prints to stdout)
-    #[arg(short, long)]
-    pub output: Option<String>,
+    #[arg(short, long, default_value = "simulate.json")]
+    pub output: String,
 
     /// Manual override JSON file path for voters and candidates
     #[arg(short = 'm', long)]
@@ -74,8 +74,8 @@ pub struct SnapshotArgs {
     pub block: String,
 
     /// Output file path (if not specified, prints to stdout)
-    #[arg(short, long)]
-    pub output: Option<String>,
+    #[arg(short, long, default_value = "snapshot.json")]
+    pub output: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -104,9 +104,9 @@ struct Args {
     action: Action,
 }
 
-fn write_output<T: serde::Serialize>(data: &T, output: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+fn write_output<T: serde::Serialize>(data: &T, file_path: String) -> Result<(), Box<dyn std::error::Error>> {
     let json = serde_json::to_string_pretty(data)?;
-    if let Some(file_path) = output {
+    if file_path != "-" {
         let mut file = File::create(file_path)?;
         file.write_all(json.as_bytes())?;
     } else {
@@ -197,8 +197,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let phase = multi_block_client.get_phase(&storage).await?;
                 info!("Phase: {:?}", phase);
                 let snapshot_service = Arc::new(SnapshotServiceImpl::new(multi_block_client.clone(), raw_client_arc.clone()));
-                let simulate_service = SimulateServiceImpl::new(multi_block_client.clone(), snapshot_service.clone());
-
+                let simulate_service = SimulateServiceImpl::new(multi_block_client.clone(), snapshot_service.clone());               
+                
                 simulate_service.simulate(block, desired_validators, apply_reduce, manual_override, min_nominator_bond, min_validator_bond).await
             });
             if election_result.is_err() {  

@@ -31,13 +31,13 @@ offline-election-tool [OPTIONS] --rpc-endpoint <RPC_ENDPOINT> <COMMAND>
 - `--max-nominations <COUNT>` - Maximum nominations per voter (optional, uses chain default if not specified)
 - `--min-nominator-bond <AMOUNT>` - Minimum nominator bond (optional, uses chain default if not specified)
 - `--min-validator-bond <AMOUNT>` - Minimum validator bond (optional, uses chain default if not specified)
-- `-o, --output <FILE>` - Write JSON output to file (optional, prints to stdout if not specified)
+- `-o, --output <FILE>` - Write JSON output to file (default: "simulate.json", use "-" to print to stdout)
 - `-m, --manual-override <FILE>` - Path to JSON file for manual override of voters and candidates
 
 ### Snapshot Command Options
 
 - `-b, --block <BLOCK>` - Block hash for snapshot (default: "latest" for latest block)
-- `-o, --output <FILE>` - Write JSON output to file (optional, prints to stdout if not specified)
+- `-o, --output <FILE>` - Write JSON output to file (default: "snapshot.json", use "-" to print to stdout)
 
 ### Server Command Options
 
@@ -95,10 +95,10 @@ The manual override feature allows you to:
 - Add or override voters with custom stake amounts (regardless of on-chain bonded amounts)
 - Remove specific voters from the election
 
-#### Save output to files:
+#### Save output to specific file names:
 ```bash
 cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --output simulate_output.json
-cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot snapshot --output snapshot.json
+cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot snapshot --output snapshot_output.json
 ```
 
 #### Start REST API server:
@@ -154,8 +154,8 @@ Simulate an election with specified parameters.
 ```json
 {
   "result": {
-    "winners": [...],
-    "assignments": [...]
+    "run_parameters": {...},
+    "active_validators": [...]
   }
 }
 ```
@@ -171,8 +171,9 @@ Retrieve election snapshot containing validator candidates and their voters.
 ```json
 {
   "result": {
-    "voters": [...],
-    "targets": [...]
+    "validators": [...],
+    "nominators": [...],
+    "config": {...}
   }
 }
 ```
