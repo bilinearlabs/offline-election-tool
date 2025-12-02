@@ -175,3 +175,25 @@ Retrieve election snapshot containing validator candidates and their voters.
     "targets": [...]
   }
 }
+```
+
+## Docker
+
+To build the Docker image locally, run:
+```bash
+docker build -t offline-election-tool .
+```
+Image can be pulled from Docker Hub:
+```bash
+docker pull bilinearlabs/offline-election-tool:<commit-hash>
+```
+
+Then run the available commands in the container:
+```bash
+docker run bilinearlabs/offline-election-tool:<commit-hash> <command>
+```
+
+To run the tool in server mode in the container:
+```bash
+docker run -p 3000:3000 bilinearlabs/offline-election-tool:<commit-hash> --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot server --address 0.0.0.0:3000
+```
