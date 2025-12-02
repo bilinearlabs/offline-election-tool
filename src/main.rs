@@ -204,7 +204,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if election_result.is_err() {  
                 return Err(format!("Error in election simulation -> {}", election_result.err().unwrap()).into());
             }
-            write_output(&election_result.unwrap(), output)?;
+            let result = election_result.unwrap();
+            let output_result = result.to_output(chain);
+            write_output(&output_result, output)?;
         }
         Action::Snapshot(snapshot_args) => {
             let block: Option<H256> = if snapshot_args.block == "latest" {
@@ -223,7 +225,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(format!("Error generating snapshot -> {}", snapshot.err().unwrap()).into());
             }
             let snapshot = snapshot.unwrap();
-            write_output(&snapshot, snapshot_args.output)?;
+            let output_snapshot = snapshot.to_output(chain);
+            write_output(&output_snapshot, snapshot_args.output)?;
         }
         Action::Server { address } => {
             info!("Starting server on {}", address);

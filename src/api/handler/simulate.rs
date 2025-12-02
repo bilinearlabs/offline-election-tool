@@ -28,7 +28,7 @@ pub struct SimulateRequestBody {
 #[derive(Serialize)]
 pub struct SimulateResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<crate::simulate::SimulationResult>,
+    pub result: Option<crate::models::SimulationResultOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -82,13 +82,16 @@ S: StorageTrait + From<Storage> + Clone + 'static,
     }).await;
 
     let (status, response) = match result {
-        Ok(result) => (
-            StatusCode::OK,
-            SimulateResponse {
-                result: Some(result),
-                error: None,
-            }
-        ),
+        Ok(result) => {
+            let output_result = result.to_output(state.chain);
+            (
+                StatusCode::OK,
+                SimulateResponse {
+                    result: Some(output_result),
+                    error: None,
+                }
+            )
+        },
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             SimulateResponse {
@@ -108,7 +111,7 @@ mod tests {
     use crate::simulate::MockSimulateService;
     use crate::snapshot::MockSnapshotService;
     use crate::models::Chain;
-    use crate::simulate::{RunParameters, SimulationResult};
+    use crate::models::{RunParameters, SimulationResult};
     use std::sync::Arc;
 
     #[tokio::test]

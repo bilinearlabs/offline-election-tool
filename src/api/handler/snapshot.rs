@@ -18,7 +18,7 @@ pub struct SnapshotRequest {
 #[derive(Serialize)]
 pub struct SnapshotResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<crate::models::Snapshot>,
+    pub result: Option<crate::models::SnapshotOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -47,13 +47,16 @@ S: StorageTrait + From<Storage> + Clone + 'static,
     let build_result = state.snapshot_service.build(block).await;
 
     let (status, response) = match build_result {
-        Ok(result) => (
-            StatusCode::OK,
-            SnapshotResponse {
-                result: Some(result),
-                error: None,
-            }
-        ),
+        Ok(result) => {
+            let output_result = result.to_output(state.chain);
+            (
+                StatusCode::OK,
+                SnapshotResponse {
+                    result: Some(output_result),
+                    error: None,
+                }
+            )
+        },
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             SnapshotResponse {

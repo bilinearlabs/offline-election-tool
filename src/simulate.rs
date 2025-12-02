@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use pallet_staking::ValidatorPrefs;
-use serde::{Serialize, Deserialize};
+use serde::Deserialize;
 use sp_core::{crypto::Ss58Codec, Get, H256};
 use sp_npos_elections::Support;
 use pallet_election_provider_multi_block::{
@@ -14,26 +14,9 @@ use sp_runtime::Perbill;
 use tracing::info;
 use frame_support::BoundedVec;
 use mockall::automock;
-use crate::{miner_config, models::Algorithm, multi_block_state_client::{MultiBlockClientTrait, StorageTrait, VoterData, VoterSnapshotPage}, primitives::Storage, snapshot::SnapshotService};
+use crate::{miner_config, multi_block_state_client::{MultiBlockClientTrait, StorageTrait, VoterData, VoterSnapshotPage}, primitives::Storage, snapshot::SnapshotService};
 
-use crate::{models::{Validator, ValidatorNomination}, multi_block_state_client::ChainClientTrait, primitives::AccountId};
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RunParameters {
-    pub algorithm: Algorithm,
-    pub iterations: usize,
-    pub reduce: bool,
-    pub max_nominations: u32,
-    pub min_nominator_bond: u128,
-    pub min_validator_bond: u128,
-    pub desired_validators: u32,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SimulationResult {
-    pub run_parameters: RunParameters,
-    pub active_validators: Vec<Validator>
-}
+use crate::{models::{Validator, ValidatorNomination, SimulationResult, RunParameters}, multi_block_state_client::ChainClientTrait, primitives::AccountId};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Override {
@@ -322,14 +305,14 @@ where
                     .map(|voter| {
                     ValidatorNomination {
                         nominator: voter.0.to_ss58check(),
-                        stake: voter.1,
+                        stake: voter.1 as u128,
                     }
                 }).collect();
 
                 Ok::<Validator, String>(Validator {
                     stash: winner.to_ss58check(),
-                    self_stake: self_stake,
-                    total_stake: support.total,
+                    self_stake: self_stake as u128,
+                    total_stake: support.total as u128,
                     commission: validator_prefs.commission.deconstruct() as f64 / 1_000_000_000.0,
                     blocked: validator_prefs.blocked,
                     nominations_count: nominations.len(),
@@ -344,7 +327,7 @@ where
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
 
-        let simulation_result = SimulationResult {
+        let simulation_result = crate::models::SimulationResult {
             run_parameters: run_parameters.clone(),
             active_validators
         };
