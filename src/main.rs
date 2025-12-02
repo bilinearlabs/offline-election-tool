@@ -96,10 +96,6 @@ enum Action {
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Polkadot, Kusama, Substrate. If not specified, the chain will be inferred from the runtime version.
-    #[arg(short, long)]
-    chain: Option<Chain>,
-
     /// RPC endpoint URL (must be aligned with the chain)
     #[arg(short, long)]
     rpc_endpoint: String,
@@ -141,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subxt_client = subxt_client::Client::new(&args.rpc_endpoint).await?;
     
     let runtime_version = raw_client.get_runtime_version().await?;
-    let runtime_chain = match runtime_version.spec_name.to_string().as_str() {
+    let chain = match runtime_version.spec_name.to_string().as_str() {
         "polkadot" => Chain::Polkadot,
         "kusama" => Chain::Kusama,
         "substrate" => Chain::Substrate,
@@ -150,7 +146,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => return Err("Unsupported chain".into()),
     };
 
-    let chain = args.chain.unwrap_or(runtime_chain);
     set_default_ss58_version(chain.ss58_address_format());
 
     // Fetch all constants from chain API

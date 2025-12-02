@@ -17,8 +17,7 @@ offline-election-tool [OPTIONS] --rpc-endpoint <RPC_ENDPOINT> <COMMAND>
 
 ### Global Options
 
-- `-c, --chain <CHAIN>` - Target chain (polkadot, kusama, substrate). If not specified, the chain will be inferred from the runtime version.
-- `-r, --rpc-endpoint <RPC_ENDPOINT>` - RPC endpoint URL (must be aligned with the chain)
+- `-r, --rpc-endpoint <RPC_ENDPOINT>` - RPC endpoint URL
 - `-h, --help` - Print help
 - `-V, --version` - Print version
 
@@ -44,39 +43,38 @@ offline-election-tool [OPTIONS] --rpc-endpoint <RPC_ENDPOINT> <COMMAND>
 
 - `-a, --address <ADDRESS>` - Server address to bind to (default: "127.0.0.1:3000")
 
-**Important:** The `--chain` and `--rpc-endpoint` arguments must be aligned. For example, if you specify `--chain polkadot`, you must use a Polkadot RPC endpoint.
 
 ### Examples
 
 #### Retrieve snapshot for latest block:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot snapshot
+cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot snapshot
 ```
 *Note: If the block contains an election snapshot, it will be retrieved. Otherwise, a snapshot will be generated from current staking data.*
 
 #### Simulate election for latest block:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate
+cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate
 ```
 
 #### Simulate election for specific block:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --block 0xc9b9a5d6efa7c36e9501b53a4ebdf77def3e7560d2520254ed1a5bb6035acae4
+cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --block 0xc9b9a5d6efa7c36e9501b53a4ebdf77def3e7560d2520254ed1a5bb6035acae4
 ```
 
 #### Simulate with PhragMMS algorithm:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --algorithm phragmms
+cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --algorithm phragmms
 ```
 
 #### Simulate with balancing iterations and reduce:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --iterations 10 --reduce
+cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --iterations 10 --reduce
 ```
 
 #### Simulate with manual override:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --manual-override override.json
+cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --manual-override override.json
 ```
 
 Manual override JSON file format:
@@ -99,18 +97,18 @@ The manual override feature allows you to:
 
 #### Save output to files:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --output simulate_output.json
-cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot snapshot --output snapshot.json
+cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot simulate --output simulate_output.json
+cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot snapshot --output snapshot.json
 ```
 
 #### Start REST API server:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot server
+cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot server
 ```
 
 Start server on custom address:
 ```bash
-cargo run -- --chain polkadot --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot server --address 0.0.0.0:8080
+cargo run -- --rpc-endpoint wss://sys.ibp.network/asset-hub-polkadot server --address 0.0.0.0:8080
 ```
 
 ## REST API Endpoints
