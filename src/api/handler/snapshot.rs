@@ -2,13 +2,12 @@ use axum::{
     extract::{Query, State}, http::StatusCode, response::Json
 };
 
+use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::{
-    api::{routes::root::AppState, utils},
-    snapshot::{SnapshotService},
-    simulate::{SimulateService},
+    api::{routes::root::AppState, utils}, multi_block_state_client::StorageTrait, primitives::Storage, simulate::SimulateService, snapshot::SnapshotService
 };
 
 #[derive(Deserialize)]
@@ -25,12 +24,11 @@ pub struct SnapshotResponse {
 }
 pub async fn snapshot_handler<
 Sim: SimulateService + Send + Sync + 'static,
-Snap: SnapshotService + Send + Sync + 'static,
+Snap: SnapshotService<MC, S> + Send + Sync + 'static,
+MC: MinerConfig + Send + Sync + Clone + 'static,
+S: StorageTrait + From<Storage> + Clone + 'static,
 >(
-    State(state): State<AppState<
-        Sim,
-        Snap,
-    >>,
+    State(state): State<AppState<Sim, Snap, MC, S>>,
     Query(params): Query<SnapshotRequest>,
 ) -> (StatusCode, Json<SnapshotResponse>)
 {
@@ -74,12 +72,13 @@ mod tests {
     use crate::snapshot::MockSnapshotService;
     use crate::models::Chain;
     use crate::simulate::MockSimulateService;
+    use crate::miner_config::polkadot::MinerConfig as PolkadotMinerConfig;
     use crate::models::{Snapshot, StakingConfig};
     use std::sync::Arc;
 
     #[tokio::test]
     async fn test_snapshot_handler() {
-        let mut snapshot_service = MockSnapshotService::new();
+        let mut snapshot_service: MockSnapshotService<PolkadotMinerConfig, Storage> = MockSnapshotService::new();
         snapshot_service.expect_build().returning(move |_| {
             Ok(Snapshot {
                 validators: vec![],
@@ -96,6 +95,7 @@ mod tests {
             simulate_service: Arc::new(MockSimulateService::new()),
             snapshot_service: Arc::new(snapshot_service),
             chain: Chain::Polkadot,
+            _phantom: std::marker::PhantomData,
         };
         let app_state_extract = State(app_state);
         let result = snapshot_handler(app_state_extract, Query(SnapshotRequest { block: None })).await;
@@ -104,10 +104,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_snapshot_handler_invalid_block() {
+        let snapshot_service: MockSnapshotService<PolkadotMinerConfig, Storage> = MockSnapshotService::new();
         let app_state = AppState {
             simulate_service: Arc::new(MockSimulateService::new()),
-            snapshot_service: Arc::new(MockSnapshotService::new()),
+            snapshot_service: Arc::new(snapshot_service),
             chain: Chain::Polkadot,
+            _phantom: std::marker::PhantomData,
         };
         let app_state_extract = State(app_state);
         let result = snapshot_handler(app_state_extract, Query(SnapshotRequest { block: Some("invalid".to_string()) })).await;
@@ -116,7 +118,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_snapshot_handler_error() {
-        let mut snapshot_service = MockSnapshotService::new();
+        let mut snapshot_service: MockSnapshotService<PolkadotMinerConfig, Storage> = MockSnapshotService::new();
         snapshot_service.expect_build().returning(move |_| {
             Err(Box::new(
                 std::io::Error::new(std::io::ErrorKind::Other, "Error")
@@ -126,6 +128,7 @@ mod tests {
             simulate_service: Arc::new(MockSimulateService::new()),
             snapshot_service: Arc::new(snapshot_service),
             chain: Chain::Polkadot,
+            _phantom: std::marker::PhantomData,
         };
         let app_state_extract = State(app_state);
         let result = snapshot_handler(app_state_extract, Query(SnapshotRequest { block: None })).await;

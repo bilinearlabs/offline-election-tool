@@ -14,11 +14,9 @@ use sp_runtime::Perbill;
 use tracing::info;
 use frame_support::BoundedVec;
 use mockall::automock;
-use crate::{multi_block_state_client::{MultiBlockClientTrait, StorageTrait, VoterData, VoterSnapshotPage}, primitives::Storage, raw_state_client::RawClientTrait};
+use crate::{multi_block_state_client::{MultiBlockClientTrait, StorageTrait, VoterData, VoterSnapshotPage}, primitives::Storage, snapshot::SnapshotService};
 
-use crate::{
-    models::{Validator, ValidatorNomination}, multi_block_state_client::ChainClientTrait, primitives::AccountId, raw_state_client::RpcClient, snapshot
-};
+use crate::{models::{Validator, ValidatorNomination}, multi_block_state_client::ChainClientTrait, primitives::AccountId};
 
 #[derive(Debug, Serialize)]
 pub struct SimulationResult {
@@ -48,33 +46,29 @@ pub trait SimulateService: Send + Sync {
     ) -> Result<SimulationResult, Box<dyn std::error::Error>>;
 }
 
-// Service implementation - contains ALL business logic
 pub struct SimulateServiceImpl<
-    RC: RpcClient + Send + Sync + 'static,
     CC: ChainClientTrait + Send + Sync + 'static,
     S: StorageTrait + From<Storage> + Clone + 'static,
     MC: MinerConfig + Send + Sync + 'static,
     MBC: MultiBlockClientTrait<CC, MC, S> + Send + Sync + 'static,
-    RawC: RawClientTrait<RC> + Send + Sync + 'static,
+    Snap: SnapshotService<MC, S> + Send + Sync + 'static,
 > {
-    // Store as trait objects (ports) - idiomatic Rust dependency injection
     multi_block_state_client: Arc<MBC>,
-    raw_state_client: Arc<RawC>,
-    _phantom: std::marker::PhantomData<(RC, CC, S, MC)>,
+    snapshot_service: Arc<Snap>,
+    _phantom: std::marker::PhantomData<(CC, S, MC)>,
 }
 
 impl<
-    RC: RpcClient + Send + Sync + 'static,
     CC: ChainClientTrait + Send + Sync + 'static,
     S: StorageTrait + From<Storage> + Clone + 'static,
-    MC: MinerConfig + Send + Sync + 'static,
+    MC: MinerConfig + Send + Sync + Clone + 'static,
     MBC: MultiBlockClientTrait<CC, MC, S> + Send + Sync + 'static,
-    RawC: RawClientTrait<RC> + Send + Sync + 'static,
-> SimulateServiceImpl<RC, CC, S, MC, MBC, RawC> {
-    pub fn new(multi_block_state_client: Arc<MBC>, raw_state_client: Arc<RawC>) -> Self {
+    Snap: SnapshotService<MC, S> + Send + Sync + 'static,
+> SimulateServiceImpl<CC, S, MC, MBC, Snap> {
+    pub fn new(multi_block_state_client: Arc<MBC>, snapshot_service: Arc<Snap>) -> Self {
         Self {
             multi_block_state_client,
-            raw_state_client,
+            snapshot_service,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -82,13 +76,12 @@ impl<
 
 #[async_trait::async_trait]
 impl<
-    RC: RpcClient + Send + Sync + 'static,
     CC: ChainClientTrait + Send + Sync + 'static,
     S: StorageTrait + From<Storage> + Clone + 'static,
     MC: MinerConfig + Send + Sync + 'static,
     MBC: MultiBlockClientTrait<CC, MC, S> + Send + Sync + 'static,
-    RawC: RawClientTrait<RC> + Send + Sync + 'static,
-> SimulateService for SimulateServiceImpl<RC, CC, S, MC, MBC, RawC>
+    Snap: SnapshotService<MC, S> + Send + Sync + 'static,
+> SimulateService for SimulateServiceImpl<CC, S, MC, MBC, Snap>
 where
     MC: MinerConfig<AccountId = AccountId> + Send,
     MC::TargetSnapshotPerBlock: Send,
@@ -109,10 +102,9 @@ where
         min_validator_bond: Option<u128>,
     ) -> Result<SimulationResult, Box<dyn std::error::Error>> {
         let multi_block_state_client = self.multi_block_state_client.as_ref();
-        let raw_state_client = self.raw_state_client.as_ref();
         let block_details = multi_block_state_client.get_block_details(block).await?;
         info!("Fetching snapshot data for election...");
-        let (mut snapshot, staking_config) = snapshot::get_snapshot_data_from_multi_block(multi_block_state_client, raw_state_client, &block_details).await?;
+        let (mut snapshot, staking_config) = self.snapshot_service.get_snapshot_data_from_multi_block(&block_details).await?;
 
         // Apply min_nominator_bond filter if provided > 0
         let effective_min_nominator_bond = min_nominator_bond.unwrap_or(0);
@@ -346,10 +338,9 @@ mod tests {
     use crate::miner_config::polkadot::MinerConfig as PolkadotMinerConfig;
     use crate::multi_block_state_client::{BlockDetails, ElectionSnapshotPage, MockMultiBlockClientTrait};
     use crate::multi_block_state_client::MockChainClientTrait;
-    use crate::raw_state_client::{MockRawClientTrait, StakingLedger};
-    use crate::raw_state_client::MockRpcClient;
+    use crate::raw_state_client::StakingLedger;
     use crate::models::StakingConfig;
-    use injectorpp::interface::injector::*;
+    use crate::snapshot::MockSnapshotService;
     use crate::primitives::Hash;
     use crate::multi_block_state_client::Phase;
     use crate::miner_config::initialize_runtime_constants;
@@ -394,11 +385,9 @@ mod tests {
     async fn test_simulate() {
         initialize_runtime_constants();
         type MockMBC = MockMultiBlockClientTrait<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>;
-        type MockRawC = MockRawClientTrait<MockRpcClient>;
         type MockBD = BlockDetails<MockDummyStorage>;
         
         let mut mock_client = MockMBC::new();
-        let raw_client = MockRawC::new();
         let block_details = MockBD {
             block_hash: Some(Hash::zero()),
             phase: Phase::Snapshot(0),
@@ -421,29 +410,23 @@ mod tests {
                 blocked: false,
             }));
 
-        let mut injector = InjectorPP::new();
-        injector
-            .when_called_async(injectorpp::async_func!(
-                snapshot::get_snapshot_data_from_multi_block(&mock_client, &raw_client, &block_details),
-                Result<(ElectionSnapshotPage<PolkadotMinerConfig>, StakingConfig), Box<dyn std::error::Error>>)
-            )
-            .will_return_async(injectorpp::async_return!(
-                Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
-                    voters: vec![BoundedVec::try_from(vec![(
-                        AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
-                        100,
-                        BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
-                    )]).unwrap()],
-                    targets: BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
-                }, StakingConfig {
-                    desired_validators: 10,
-                    max_nominations: 16,
-                    min_nominator_bond: 0,
-                    min_validator_bond: 0,
-                })), Result<(ElectionSnapshotPage<PolkadotMinerConfig>, StakingConfig), Box<dyn std::error::Error>>
-            ));
-
-        let simulate_service = SimulateServiceImpl::new(Arc::new(mock_client), Arc::new(raw_client));
+        let mut snapshot_service = MockSnapshotService::new();
+        snapshot_service.expect_get_snapshot_data_from_multi_block().returning(move |_block_details: &BlockDetails<MockDummyStorage>| {
+            Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
+                voters: vec![BoundedVec::try_from(vec![(
+                    AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+                    100,
+                    BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+                )]).unwrap()],
+                targets: BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+            }, StakingConfig {
+                desired_validators: 10,
+                max_nominations: 16,
+                min_nominator_bond: 0,
+                min_validator_bond: 0,
+            }))
+        });
+        let simulate_service = SimulateServiceImpl::new(Arc::new(mock_client), Arc::new(snapshot_service));
         let result = simulate_service.simulate(None, None, false, None, None, None).await;
         assert!(result.is_ok());
         let simulation_result = result.unwrap();
@@ -465,11 +448,9 @@ mod tests {
     async fn test_simulate_with_min_bonds() {
         initialize_runtime_constants();
         type MockMBC = MockMultiBlockClientTrait<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>;
-        type MockRawC = MockRawClientTrait<MockRpcClient>;
         type MockBD = BlockDetails<MockDummyStorage>;
         
         let mut mock_client = MockMBC::new();
-        let raw_client = MockRawC::new();
         let block_details = MockBD {
             block_hash: Some(Hash::zero()),
             phase: Phase::Snapshot(0),
@@ -515,40 +496,24 @@ mod tests {
                 commission: Perbill::from_parts(0),
                 blocked: false,
             }));
-
-        let mut injector = InjectorPP::new();
-        injector
-            .when_called_async(injectorpp::async_func!(
-                snapshot::get_snapshot_data_from_multi_block(&mock_client, &raw_client, &block_details),
-                Result<(ElectionSnapshotPage<PolkadotMinerConfig>, StakingConfig), Box<dyn std::error::Error>>)
-            )
-            .will_return_async(injectorpp::async_return!(
-                Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
-                    voters: vec![BoundedVec::try_from(vec![
-                        (
-                            AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
-                            100,
-                            BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
-                        ),
-                        (
-                            AccountId::from_ss58check("136GehDWrz4tqL7ivAT53VeS3PweRZDSHyrbnWLdWJpchW8M").unwrap(),
-                            0,
-                            BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
-                        )
-                        ]).unwrap()],
-                    targets: BoundedVec::try_from(vec![
-                        AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap(),
-                        AccountId::from_ss58check("15ANfaUMadXk65NtRqzCKuhAiVSA47Ks6fZs8rUcRQX11pzM").unwrap()
-                    ]).unwrap()
-                }, StakingConfig {
-                    desired_validators: 10,
-                    max_nominations: 16,
-                    min_nominator_bond: 100,
-                    min_validator_bond: 100,
-                })), Result<(ElectionSnapshotPage<PolkadotMinerConfig>, StakingConfig), Box<dyn std::error::Error>>
-            ));
-
-        let simulate_service = SimulateServiceImpl::new(Arc::new(mock_client), Arc::new(raw_client));
+       
+        let mut snapshot_service = MockSnapshotService::new();
+        snapshot_service.expect_get_snapshot_data_from_multi_block().returning(move |_block_details: &BlockDetails<MockDummyStorage>| {
+            Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
+                voters: vec![BoundedVec::try_from(vec![(
+                    AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+                    100,
+                    BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+                )]).unwrap()],
+                targets: BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+            }, StakingConfig {
+                desired_validators: 10,
+                max_nominations: 16,
+                min_nominator_bond: 100,
+                min_validator_bond: 100,
+            }))
+        });
+        let simulate_service = SimulateServiceImpl::new(Arc::new(mock_client), Arc::new(snapshot_service));
         let result = simulate_service.simulate(None, None, false, None, Some(100), Some(100)).await;
         assert!(result.is_ok());
         let simulation_result = result.unwrap();
@@ -570,11 +535,9 @@ mod tests {
     async fn test_simulate_with_manual_override() {
         initialize_runtime_constants();
         type MockMBC = MockMultiBlockClientTrait<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>;
-        type MockRawC = MockRawClientTrait<MockRpcClient>;
         type MockBD = BlockDetails<MockDummyStorage>;
         
         let mut mock_client = MockMBC::new();
-        let raw_client = MockRawC::new();
         let block_details = MockBD {
             block_hash: Some(Hash::zero()),
             phase: Phase::Snapshot(0),
@@ -597,28 +560,6 @@ mod tests {
                 blocked: false,
             }));
 
-        let mut injector = InjectorPP::new();
-        injector
-            .when_called_async(injectorpp::async_func!(
-                snapshot::get_snapshot_data_from_multi_block(&mock_client, &raw_client, &block_details),
-                Result<(ElectionSnapshotPage<PolkadotMinerConfig>, StakingConfig), Box<dyn std::error::Error>>)
-            )
-            .will_return_async(injectorpp::async_return!(
-                Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
-                    voters: vec![BoundedVec::try_from(vec![(
-                        AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
-                        100,
-                        BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
-                    )]).unwrap()],
-                    targets: BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
-                }, StakingConfig {
-                    desired_validators: 10,
-                    max_nominations: 16,
-                    min_nominator_bond: 0,
-                    min_validator_bond: 0,
-                })), Result<(ElectionSnapshotPage<PolkadotMinerConfig>, StakingConfig), Box<dyn std::error::Error>>
-            ));
-
         let manual_override = Override {
             voters: vec![(
                 "5GE5XFDHirGGeYNNUCwCBks1rsSWMomj2AqNyZVFsKVUqWZD".to_string(),
@@ -630,7 +571,23 @@ mod tests {
             candidates_remove: vec!["5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2".to_string()],
         };
 
-        let simulate_service = SimulateServiceImpl::new(Arc::new(mock_client), Arc::new(raw_client));
+        let mut snapshot_service = MockSnapshotService::new();
+        snapshot_service.expect_get_snapshot_data_from_multi_block().returning(move |_block_details: &BlockDetails<MockDummyStorage>| {
+            Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
+                voters: vec![BoundedVec::try_from(vec![(
+                    AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+                    100,
+                    BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+                )]).unwrap()],
+                targets: BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+            }, StakingConfig {
+                desired_validators: 10,
+                max_nominations: 16,
+                min_nominator_bond: 0,
+                min_validator_bond: 0,
+            }))
+        });
+        let simulate_service = SimulateServiceImpl::new(Arc::new(mock_client), Arc::new(snapshot_service));
         let result = simulate_service.simulate(None, None, false, Some(manual_override), None, None).await;
         assert!(result.is_ok());
         let simulation_result = result.unwrap();
