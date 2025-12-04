@@ -66,11 +66,11 @@ impl RpcClient for WsClient {
 #[async_trait::async_trait]
 pub trait RawClientTrait<C: RpcClient + Send + Sync + 'static> {
     async fn get_runtime_version(&self) -> Result<RuntimeVersion, Box<dyn std::error::Error>>;
-    async fn get_keys_paged(&self, prefix: StorageKey, count: u32, start_key: Option<StorageKey>, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>>;
-    async fn get_all_keys(&self, prefix: StorageKey, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>>;
-    async fn enumerate_accounts(&self, module: &[u8], storage: &[u8], at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>>;
-    async fn get_validators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>>;
-    async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>>;
+    async fn get_keys_paged(&self, prefix: StorageKey, count: u32, start_key: Option<StorageKey>, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_all_keys(&self, prefix: StorageKey, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn enumerate_accounts(&self, module: &[u8], storage: &[u8], at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_validators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[derive(Clone, Copy)]
@@ -129,7 +129,7 @@ impl<C: RpcClient + Send + Sync + 'static> RawClientTrait<C> for RawClient<C> {
 
     // Get all targets when no snapshot
     // Get paged keys
-    async fn get_keys_paged(&self, prefix: StorageKey, count: u32, start_key: Option<StorageKey>, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>> {
+    async fn get_keys_paged(&self, prefix: StorageKey, count: u32, start_key: Option<StorageKey>, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error + Send + Sync>> {
         let serialized_prefix = to_value(prefix).expect("StorageKey serialization infallible");
         let serialized_start = start_key.map(|k| to_value(k).expect("StorageKey serialization infallible"));
         let at_val = to_value(at).expect("Block hash serialization infallible");
@@ -142,7 +142,7 @@ impl<C: RpcClient + Send + Sync + 'static> RawClientTrait<C> for RawClient<C> {
     }
 
     /// Get all keys from a storage map by paginating through results
-    async fn get_all_keys(&self, prefix: StorageKey, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error>> {
+    async fn get_all_keys(&self, prefix: StorageKey, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error + Send + Sync>> {
         let mut all_keys = Vec::new();
         let mut start_key: Option<StorageKey> = None;
         let page_size = 1000u32;
@@ -168,7 +168,7 @@ impl<C: RpcClient + Send + Sync + 'static> RawClientTrait<C> for RawClient<C> {
 
 
     // Enumerate all AccountId keys of a Twox64Concat map
-    async fn enumerate_accounts(&self, module: &[u8], storage: &[u8], at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
+    async fn enumerate_accounts(&self, module: &[u8], storage: &[u8], at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>> {
         let prefix_key = self.value_key(module, storage);
         let keys = self.get_all_keys(prefix_key.clone(), at).await?;
         let mut accounts = Vec::new();
@@ -183,12 +183,12 @@ impl<C: RpcClient + Send + Sync + 'static> RawClientTrait<C> for RawClient<C> {
     }
 
     // Get all validator stash accounts by enumerating Staking.Validators
-    async fn get_validators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
+    async fn get_validators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>> {
         self.enumerate_accounts(b"Staking", b"Validators", at).await
     }
 
     // Get all nominator stash accounts by enumerating Staking.Nominators
-    async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error>> {
+    async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>> {
         self.enumerate_accounts(b"Staking", b"Nominators", at).await
     }
 }

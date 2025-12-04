@@ -5,9 +5,7 @@ use pallet_staking::ValidatorPrefs;
 use serde::Deserialize;
 use sp_core::{crypto::Ss58Codec, Get, H256};
 use sp_npos_elections::Support;
-use pallet_election_provider_multi_block::{
-    PagedRawSolution, unsigned::miner::{BaseMiner, MineInput}
-};
+use pallet_election_provider_multi_block::{unsigned::miner::{BaseMiner, MineInput}};
 use pallet_election_provider_multi_block::unsigned::miner::MinerConfig;
 use futures::future::join_all;
 use sp_runtime::Perbill;
@@ -38,7 +36,7 @@ pub trait SimulateService: Send + Sync {
         manual_override: Option<Override>,
         min_nominator_bond: Option<u128>,   
         min_validator_bond: Option<u128>,
-    ) -> Result<SimulationResult, Box<dyn std::error::Error>>;
+    ) -> Result<SimulationResult, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 pub struct SimulateServiceImpl<
@@ -95,9 +93,11 @@ where
         manual_override: Option<Override>,
         min_nominator_bond: Option<u128>,
         min_validator_bond: Option<u128>,
-    ) -> Result<SimulationResult, Box<dyn std::error::Error>> {
+    ) -> Result<SimulationResult, Box<dyn std::error::Error + Send + Sync>> {
         let multi_block_state_client = self.multi_block_state_client.as_ref();
         let block_details = multi_block_state_client.get_block_details(block).await?;
+        let phase = multi_block_state_client.get_phase(&block_details.storage).await?;
+        info!("Phase: {:?}", phase);
         let balancing_iter = miner_config::BalancingIterations::get();
         let algorithm = miner_config::get_current_algorithm();
         let max_nominations = miner_config::MaxVotesPerVoter::get();
@@ -261,13 +261,9 @@ where
             round: block_details.round,
         };
         info!("Mining solution for election...");
-        
-        let paged_solution = tokio::task::spawn_blocking(move || -> Result<PagedRawSolution<MC>, String> {
-            let solution = BaseMiner::<MC>::mine_solution(mine_input)
-                .map_err(|e| format!("Error mining solution: {:?}", e))?;
-            Ok(solution) 
-        }).await.unwrap()?;
 
+        let paged_solution = BaseMiner::<MC>::mine_solution(mine_input).map_err(|e| format!("Error mining solution: {:?}", e))?;
+        
         // Convert each solution page to supports and combine them
         let mut total_supports: BTreeMap<AccountId, Support<AccountId>> = BTreeMap::new();
 

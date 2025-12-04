@@ -20,7 +20,7 @@ use std::marker::PhantomData;
 #[automock]
 #[async_trait::async_trait]
 pub trait ChainClientTrait: Send + Sync {
-    async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error>>;
+    async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error + Send + Sync>>;
     async fn fetch_constant<T: serde::de::DeserializeOwned>(
         &self,
         pallet: &str,
@@ -33,7 +33,7 @@ pub trait ChainClientTrait: Send + Sync {
 // Implementation of ChainClientTrait for Client
 #[async_trait::async_trait]
 impl ChainClientTrait for Client {
-    async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error>> {
+    async fn get_storage(&self, block: Option<Hash>) -> Result<Storage, Box<dyn std::error::Error + Send + Sync>> {
         if let Some(block) = block {
             Ok(self.chain_api().storage().at(block))
         } else {
@@ -57,14 +57,14 @@ pub trait StorageTrait: Send + Sync {
     async fn fetch<Addr>(
         &self,
         address: &Addr,
-    ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error>>
+    ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error + Send + Sync>>
     where
         Addr: Address<IsFetchable = Yes> + Sync + 'static;
 
     async fn fetch_or_default<Addr>(
         &self,
         address: &Addr,
-    ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error>>
+    ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error + Send + Sync>>
     where
         Addr: Address<IsFetchable = Yes, IsDefaultable = Yes> + Sync + 'static;
 }
@@ -74,7 +74,7 @@ impl StorageTrait for Storage {
     async fn fetch<Addr>(
         &self,
         address: &Addr,
-    ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error>>
+    ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error + Send + Sync>>
     where
         Addr: Address<IsFetchable = Yes> + Sync + 'static,
     {
@@ -85,7 +85,7 @@ impl StorageTrait for Storage {
     async fn fetch_or_default<Addr>(
         &self,
         address: &Addr,
-    ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error>>
+    ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error + Send + Sync>>
     where
         Addr: Address<IsFetchable = Yes, IsDefaultable = Yes> + Sync + 'static,
     {
@@ -163,20 +163,20 @@ pub struct ElectionSnapshotPage<MC: MinerConfig> {
 #[automock]
 #[async_trait::async_trait]
 pub trait MultiBlockClientTrait<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static, S: StorageTrait + From<Storage> + 'static> {
-    async fn get_storage(&self, block: Option<Hash>) -> Result<S, Box<dyn std::error::Error>>;
-    async fn get_block_details(&self, block: Option<Hash>) -> Result<BlockDetails<S>, Box<dyn std::error::Error>>;
-    async fn get_phase(&self, storage: &S) -> Result<Phase, Box<dyn std::error::Error>>;
-    async fn get_round(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error>>;
-    async fn get_desired_targets(&self, storage: &S, round: u32) -> Result<u32, Box<dyn std::error::Error>>;
-    async fn get_block_number(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error>>;
-    async fn get_min_nominator_bond(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error>>;
-    async fn get_min_validator_bond(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error>>;
-    async fn fetch_paged_voter_snapshot(&self, storage: &S, round: u32, page: u32) -> Result<VoterSnapshotPage<MC>, Box<dyn std::error::Error>>;
-    async fn fetch_paged_target_snapshot(&self, storage: &S, round: u32, page: u32) -> Result<TargetSnapshotPage<MC>, Box<dyn std::error::Error>>;
-    async fn get_validator_prefs(&self, storage: &S, validator: AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error>>;
-    async fn get_nominator(&self, storage: &S, nominator: AccountId) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error>>;
-    async fn get_controller_from_stash(&self, storage: &S, stash: AccountId) -> Result<Option<AccountId>, Box<dyn std::error::Error>>;
-    async fn ledger(&self, storage: &S, account: AccountId) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>>;
+    async fn get_storage(&self, block: Option<Hash>) -> Result<S, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_block_details(&self, block: Option<Hash>) -> Result<BlockDetails<S>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_phase(&self, storage: &S) -> Result<Phase, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_round(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_desired_targets(&self, storage: &S, round: u32) -> Result<u32, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_block_number(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_min_nominator_bond(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_min_validator_bond(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error + Send + Sync>>;
+    async fn fetch_paged_voter_snapshot(&self, storage: &S, round: u32, page: u32) -> Result<VoterSnapshotPage<MC>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn fetch_paged_target_snapshot(&self, storage: &S, round: u32, page: u32) -> Result<TargetSnapshotPage<MC>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_validator_prefs(&self, storage: &S, validator: AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_nominator(&self, storage: &S, nominator: AccountId) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_controller_from_stash(&self, storage: &S, stash: AccountId) -> Result<Option<AccountId>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn ledger(&self, storage: &S, account: AccountId) -> Result<Option<StakingLedger>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 pub struct MultiBlockClient<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static, S: StorageTrait + From<Storage> + 'static> {
@@ -192,13 +192,13 @@ impl<MC: MinerConfig + Send + Sync + 'static> MultiBlockClient<Client, MC, Stora
 
 #[async_trait::async_trait]
 impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static, S: StorageTrait + From<Storage> + Send + Sync + 'static> MultiBlockClientTrait<C, MC, S> for MultiBlockClient<C, MC, S> {
-    async fn get_storage(&self, block: Option<Hash>) -> Result<S, Box<dyn std::error::Error>> {
+    async fn get_storage(&self, block: Option<Hash>) -> Result<S, Box<dyn std::error::Error + Send + Sync>> {
         let storage = self.client.get_storage(block).await?;
         Ok(S::from(storage))
     }
 
     // Get block-specific details for a given block.
-    async fn get_block_details(&self, block: Option<Hash>) -> Result<BlockDetails<S>, Box<dyn std::error::Error>> {
+    async fn get_block_details(&self, block: Option<Hash>) -> Result<BlockDetails<S>, Box<dyn std::error::Error + Send + Sync>> {
         let storage: S = self.get_storage(block).await?;
 		let phase = self.get_phase(&storage).await?;
         let round = self.get_round(&storage).await?;
@@ -217,21 +217,21 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
 		})
     }
 
-    async fn get_phase(&self, storage: &S) -> Result<Phase, Box<dyn std::error::Error>> {
+    async fn get_phase(&self, storage: &S) -> Result<Phase, Box<dyn std::error::Error + Send + Sync>> {
         let phase_key = subxt::dynamic::storage("MultiBlockElection", "CurrentPhase", vec![]);
         let phase = storage.fetch_or_default(&phase_key).await?;
         let phase: Phase = codec::Decode::decode(&mut phase.encoded())?;
         Ok(phase)
     }
 
-    async fn get_round(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error>> {
+    async fn get_round(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
         let storage_key = subxt::dynamic::storage("MultiBlockElection", "Round", vec![]);
         let round = storage.fetch_or_default(&storage_key).await?;
         let round: u32 = codec::Decode::decode(&mut round.encoded())?;
         Ok(round)
     }
 
-    async fn get_desired_targets(&self, storage: &S, round: u32) -> Result<u32, Box<dyn std::error::Error>> {
+    async fn get_desired_targets(&self, storage: &S, round: u32) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
         let storage_key = subxt::dynamic::storage(
             "MultiBlockElection",
             "DesiredTargets",
@@ -245,7 +245,7 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
         Ok(desired_targets)
     }
 
-    async fn get_block_number(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error>> {
+    async fn get_block_number(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
         let storage_key = subxt::dynamic::storage("System", "Number", vec![]);
         let block_number_entry = storage.fetch(&storage_key)
             .await?
@@ -254,7 +254,7 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
         Ok(block_number)
     }
 
-    async fn get_min_nominator_bond(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error>> {
+    async fn get_min_nominator_bond(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
         let storage_key = subxt::dynamic::storage("Staking", "MinNominatorBond", vec![]);
         let min_nominator_bond_entry = storage.fetch(&storage_key)
             .await?
@@ -263,7 +263,7 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
         Ok(min_nominator_bond)
     }
 
-    async fn get_min_validator_bond(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error>> {
+    async fn get_min_validator_bond(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
         let storage_key = subxt::dynamic::storage("Staking", "MinValidatorBond", vec![]);
         let min_validator_bond_entry = storage.fetch(&storage_key)
             .await?
@@ -272,7 +272,7 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
         Ok(min_validator_bond)
     }
 
-    async fn fetch_paged_voter_snapshot(&self, storage: &S, round: u32, page: u32) -> Result<VoterSnapshotPage<MC>, Box<dyn std::error::Error>> {
+    async fn fetch_paged_voter_snapshot(&self, storage: &S, round: u32, page: u32) -> Result<VoterSnapshotPage<MC>, Box<dyn std::error::Error + Send + Sync>> {
         let storage_key = subxt::dynamic::storage(
             "MultiBlockElection",
             "PagedVoterSnapshot",
@@ -287,7 +287,7 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
         Ok(voter_snapshot)
     }
 
-    async fn fetch_paged_target_snapshot(&self, storage: &S, round: u32, page: u32) -> Result<TargetSnapshotPage<MC>, Box<dyn std::error::Error>> {
+    async fn fetch_paged_target_snapshot(&self, storage: &S, round: u32, page: u32) -> Result<TargetSnapshotPage<MC>, Box<dyn std::error::Error + Send + Sync>> {
         let storage_key = subxt::dynamic::storage(
             "MultiBlockElection",
             "PagedTargetSnapshot",
@@ -300,7 +300,7 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
         Ok(target_snapshot)
     }
     
-    async fn get_validator_prefs(&self, storage: &S, validator: AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error>> {
+    async fn get_validator_prefs(&self, storage: &S, validator: AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error + Send + Sync>> {
         let encoded_validator = validator.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Validators", vec![scale_value::Value::from(encoded_validator)]);
         let validator_prefs_entry = storage.fetch(&storage_key)
@@ -310,7 +310,7 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
         Ok(validator_prefs)
     }
 
-    async fn get_nominator(&self, storage: &S, nominator: AccountId) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error>> {
+    async fn get_nominator(&self, storage: &S, nominator: AccountId) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error + Send + Sync>> {
         let encoded_nominator = nominator.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Nominators", vec![scale_value::Value::from(encoded_nominator)]);
         match storage.fetch(&storage_key).await? {
@@ -323,7 +323,7 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
     }
 
     // Get controller account for a given stash account
-    async fn get_controller_from_stash(&self, storage: &S, stash: AccountId) -> Result<Option<AccountId>, Box<dyn std::error::Error>> {
+    async fn get_controller_from_stash(&self, storage: &S, stash: AccountId) -> Result<Option<AccountId>, Box<dyn std::error::Error + Send + Sync>> {
         let encoded_stash = stash.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Bonded", vec![scale_value::Value::from(encoded_stash)]);
         match storage.fetch(&storage_key).await? {
@@ -335,7 +335,7 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
         }
     }
 
-    async fn ledger(&self, storage: &S, account: AccountId) -> Result<Option<StakingLedger>, Box<dyn std::error::Error>> {
+    async fn ledger(&self, storage: &S, account: AccountId) -> Result<Option<StakingLedger>, Box<dyn std::error::Error + Send + Sync>> {
         let encoded_account = account.encode();
         let storage_key = subxt::dynamic::storage("Staking", "Ledger", vec![scale_value::Value::from(encoded_account)]);
         match storage.fetch(&storage_key).await? {

@@ -9,7 +9,7 @@ use crate::api::routes::root;
 use crate::simulate::{SimulateService, SimulateServiceImpl};
 use crate::snapshot::{SnapshotService, SnapshotServiceImpl};
 use crate::models::{Chain, Algorithm};
-use crate::multi_block_state_client::{MultiBlockClient, MultiBlockClientTrait};
+use crate::multi_block_state_client::{MultiBlockClient};
 use crate::primitives::Storage;
 use crate::raw_state_client::RawClientTrait;
 use crate::subxt_client::Client;
@@ -192,10 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             let election_result = with_miner_config!(chain, {
                 let multi_block_client = Arc::new(MultiBlockClient::<Client, MinerConfig, Storage>::new(subxt_client.clone()));
-                let raw_client_arc = Arc::new(raw_client);
-                let storage = multi_block_client.get_storage(block).await?;
-                let phase = multi_block_client.get_phase(&storage).await?;
-                info!("Phase: {:?}", phase);
+                let raw_client_arc = Arc::new(raw_client);             
                 let snapshot_service = Arc::new(SnapshotServiceImpl::new(multi_block_client.clone(), raw_client_arc.clone()));
                 let simulate_service = SimulateServiceImpl::new(multi_block_client.clone(), snapshot_service.clone());               
                 

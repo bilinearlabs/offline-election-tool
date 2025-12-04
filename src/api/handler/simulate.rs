@@ -68,18 +68,32 @@ S: StorageTrait + From<Storage> + Clone + 'static,
     let min_validator_bond = body.min_validator_bond;
     let manual_override = body.manual_override;
     
-    // Run simulation within task-local scope for algorithm, iterations, and max nominations
-    // This ensures each concurrent request gets its own isolated value
-    let result = miner_config::with_election_config(state.chain, algorithm, iterations, max_nominations, async {
-        state.simulate_service.simulate(
-            block,
-            desired_validators,
-            apply_reduce,
-            manual_override,
-            min_nominator_bond,
-            min_validator_bond,
-        ).await
-    }).await;
+    let span = tracing::Span::current();
+    let result = tokio::task::spawn_blocking(move || {
+        // Maintain the same scope as the main function
+        let _enter = span.enter();
+        // Create a single-thread runtime for this OS thread
+        let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .unwrap();
+
+        rt.block_on(async {
+            // Run simulation within task-local scope for algorithm, iterations, and max nominations
+            miner_config::with_election_config(state.chain, algorithm, iterations, max_nominations, 
+                async move {
+                    state.simulate_service.simulate(
+                        block,
+                        desired_validators,
+                        apply_reduce,
+                        manual_override,
+                        min_nominator_bond,
+                        min_validator_bond,
+                    ).await
+                }
+            ).await
+        })
+    }).await.unwrap();
 
     let (status, response) = match result {
         Ok(result) => {

@@ -27,11 +27,11 @@ where
     async fn build(
         &self,
         block: Option<H256>,
-    ) -> Result<Snapshot, Box<dyn std::error::Error>>;
+    ) -> Result<Snapshot, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_snapshot_data_from_multi_block(
         &self,
         block_details: &BlockDetails<S>,
-    ) -> Result<(ElectionSnapshotPage<MC>, StakingConfig), Box<dyn std::error::Error>>;
+    ) -> Result<(ElectionSnapshotPage<MC>, StakingConfig), Box<dyn std::error::Error + Send + Sync>>;
 }
 
 pub struct SnapshotServiceImpl<
@@ -85,7 +85,7 @@ where
     async fn build(
         &self,
         block: Option<H256>,
-    ) -> Result<Snapshot, Box<dyn std::error::Error>> {
+    ) -> Result<Snapshot, Box<dyn std::error::Error + Send + Sync>> {
         let multi_block_state_client = self.multi_block_state_client.as_ref();
         let block_details = multi_block_state_client.get_block_details(block).await?;
         let (snapshot, staking_config) = self.get_snapshot_data_from_multi_block(&block_details)
@@ -135,7 +135,7 @@ where
     async fn get_snapshot_data_from_multi_block(
         &self,
         block_details: &BlockDetails<S>,
-    ) -> Result<(ElectionSnapshotPage<MC>, StakingConfig), Box<dyn std::error::Error>>
+    ) -> Result<(ElectionSnapshotPage<MC>, StakingConfig), Box<dyn std::error::Error + Send + Sync>>
     {
         let client = self.multi_block_state_client.as_ref();
         let staking_config = get_staking_config_from_multi_block(client, block_details).await?;
@@ -280,7 +280,7 @@ pub async fn get_staking_config_from_multi_block<
     MBC: MultiBlockClientTrait<C, MC, S> + Send + Sync + 'static>(
     client: &MBC,
     block_details: &BlockDetails<S>,
-) -> Result<StakingConfig, Box<dyn std::error::Error>>
+) -> Result<StakingConfig, Box<dyn std::error::Error + Send + Sync>>
 where
     MC: Send + Sync + 'static,
 {
