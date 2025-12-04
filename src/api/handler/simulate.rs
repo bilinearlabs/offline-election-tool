@@ -125,7 +125,7 @@ mod tests {
     use crate::simulate::MockSimulateService;
     use crate::snapshot::MockSnapshotService;
     use crate::models::Chain;
-    use crate::models::{RunParameters, SimulationResult};
+    use crate::models::{RunParameters, SimulationResult, StakingStats};
     use std::sync::Arc;
 
     #[tokio::test]
@@ -143,6 +143,11 @@ mod tests {
                     desired_validators: 0,
                 },
                 active_validators: vec![],
+                staking_stats: StakingStats {
+                    total_staked: 0,
+                    lowest_staked: 0,
+                    avg_staked: 0,
+                },
             })
         });
         let snapshot_service: MockSnapshotService<PolkadotMinerConfig, Storage> = MockSnapshotService::new();

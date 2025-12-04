@@ -313,14 +313,14 @@ mod tests {
             async fn fetch<Addr>(
                 &self,
                 address: &Addr,
-            ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error>>
+            ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error + Send + Sync>>
             where
                 Addr: Address<IsFetchable = Yes> + Sync + 'static;
 
             async fn fetch_or_default<Addr>(
                 &self,
                 address: &Addr,
-            ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error>>
+            ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error + Send + Sync>>
             where
                 Addr: Address<IsFetchable = Yes, IsDefaultable = Yes> + Sync + 'static;
         }
@@ -396,7 +396,7 @@ mod tests {
             
         let result = snapshot_service.get_snapshot_data_from_multi_block(&BlockDetails::<MockDummyStorage> {
             block_hash: Some(Hash::zero()),
-            phase: Phase::Snapshot(0),
+            phase: Phase::Signed(10),
             round: 1,
             n_pages: 1,
             desired_targets: 10,
@@ -601,7 +601,7 @@ mod tests {
             .with(eq(None))
             .returning(|_block: Option<H256>| Ok(BlockDetails::<MockDummyStorage> {
                 block_hash: Some(Hash::zero()),
-                phase: Phase::Snapshot(0),
+                phase: Phase::Signed(10),
                 round: 1,
                 n_pages: 1,
                 desired_targets: 10,

@@ -119,7 +119,6 @@ impl Phase {
 	/// Check if snapshots are available in this phase.
 	/// 
 	/// Snapshots are available in:
-	/// - `Snapshot(0)` - when snapshot creation is complete (all pages fetched)
 	/// - `Done` - snapshot is done, waiting for export
 	/// - `Signed` - signed phase is open
 	/// - `SignedValidation` - validating signed results
@@ -128,17 +127,16 @@ impl Phase {
 	/// 
 	/// Snapshots are NOT available in:
 	/// - `Off` - election hasn't started
-	/// - `Snapshot(n)` where n > 0 - snapshot is still being created
+	/// - `Snapshot(n)` - snapshot is still being created
 	/// - `Emergency` - emergency phase locks the pallet
 	pub fn has_snapshot(&self) -> bool {
 		match self {
-			Phase::Snapshot(0) => true,  // Snapshot complete
 			Phase::Done => true,
 			Phase::Signed(_) => true,
 			Phase::SignedValidation(_) => true,
 			Phase::Unsigned(_) => true,
 			Phase::Export(_) => true,
-			Phase::Snapshot(_) => false,  // Still being created (n > 0)
+			Phase::Snapshot(_) => false,
 			Phase::Off => false,
 			Phase::Emergency => false,
 		}
@@ -380,14 +378,14 @@ mod tests {
             async fn fetch<Addr>(
                 &self,
                 address: &Addr,
-            ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error>>
+            ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error + Send + Sync>>
             where
                 Addr: Address<IsFetchable = Yes> + Sync + 'static;
 
             async fn fetch_or_default<Addr>(
                 &self,
                 address: &Addr,
-            ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error>>
+            ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error + Send + Sync>>
             where
                 Addr: Address<IsFetchable = Yes, IsDefaultable = Yes> + Sync + 'static;
         }

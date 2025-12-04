@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap};
 use std::sync::Arc;
 
 use pallet_staking::ValidatorPrefs;
@@ -12,7 +12,7 @@ use sp_runtime::Perbill;
 use tracing::info;
 use frame_support::BoundedVec;
 use mockall::automock;
-use crate::{miner_config, multi_block_state_client::{MultiBlockClientTrait, StorageTrait, VoterData, VoterSnapshotPage}, primitives::Storage, snapshot::SnapshotService};
+use crate::{miner_config, models::StakingStats, multi_block_state_client::{MultiBlockClientTrait, StorageTrait, VoterData, VoterSnapshotPage}, primitives::Storage, snapshot::SnapshotService};
 
 use crate::{models::{Validator, ValidatorNomination, SimulationResult, RunParameters}, multi_block_state_client::ChainClientTrait, primitives::AccountId};
 
@@ -323,9 +323,18 @@ where
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
 
+        let total_staked = active_validators.iter().map(|v| v.total_stake).sum();
+        let lowest_staked = active_validators.iter().map(|v| v.total_stake).min().unwrap_or(0);
+        let avg_staked = total_staked / active_validators.len() as u128;
+
         let simulation_result = crate::models::SimulationResult {
             run_parameters: run_parameters.clone(),
-            active_validators
+            active_validators,
+            staking_stats: StakingStats {
+                total_staked: total_staked,
+                lowest_staked: lowest_staked,
+                avg_staked: avg_staked,
+            },
         };
 
         Ok(simulation_result)
@@ -358,14 +367,14 @@ mod tests {
             async fn fetch<Addr>(
                 &self,
                 address: &Addr,
-            ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error>>
+            ) -> Result<Option<<Addr as Address>::Target>, Box<dyn std::error::Error + Send + Sync>>
             where
                 Addr: Address<IsFetchable = Yes> + Sync + 'static;
 
             async fn fetch_or_default<Addr>(
                 &self,
                 address: &Addr,
-            ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error>>
+            ) -> Result<<Addr as Address>::Target, Box<dyn std::error::Error + Send + Sync>>
             where
                 Addr: Address<IsFetchable = Yes, IsDefaultable = Yes> + Sync + 'static;
         }
@@ -402,6 +411,9 @@ mod tests {
             storage: MockDummyStorage::new(),
             _block_number: 100,
         };
+
+        mock_client.expect_get_phase()
+            .returning(|_storage: &MockDummyStorage| Ok(Phase::Snapshot(0)));
         
         let block_details_clone = block_details.clone();
         mock_client.expect_get_block_details()
@@ -465,6 +477,9 @@ mod tests {
             storage: MockDummyStorage::new(),
             _block_number: 100,
         };
+
+        mock_client.expect_get_phase()
+            .returning(|_storage: &MockDummyStorage| Ok(Phase::Snapshot(0)));
         
         let block_details_clone = block_details.clone();
         mock_client.expect_get_block_details()
@@ -552,6 +567,9 @@ mod tests {
             storage: MockDummyStorage::new(),
             _block_number: 100,
         };
+
+        mock_client.expect_get_phase()
+            .returning(|_storage: &MockDummyStorage| Ok(Phase::Snapshot(0)));
         
         let block_details_clone = block_details.clone();
         mock_client.expect_get_block_details()

@@ -153,20 +153,41 @@ pub struct RunParameters {
 #[derive(Debug)]
 pub struct SimulationResult {
     pub run_parameters: RunParameters,
-    pub active_validators: Vec<Validator>
+    pub staking_stats: StakingStats,
+    pub active_validators: Vec<Validator>,
+}
+
+#[derive(Debug)]
+pub struct StakingStats {
+    pub total_staked: Balance,
+    pub lowest_staked: Balance,
+    pub avg_staked: Balance,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StakingStatsOutput {
+    pub total_staked: String,
+    pub lowest_staked: String,
+    pub avg_staked: String,
 }
 
 // Output simulation with formatted stake strings
 #[derive(Debug, Serialize)]
 pub struct SimulationResultOutput {
     pub run_parameters: RunParameters,
-    pub active_validators: Vec<ValidatorOutput>
+    pub staking_stats: StakingStatsOutput,
+    pub active_validators: Vec<ValidatorOutput>,
 }
 
 impl SimulationResult {
     pub fn to_output(&self, chain: Chain) -> SimulationResultOutput {
         SimulationResultOutput {
             run_parameters: self.run_parameters.clone(),
+            staking_stats: StakingStatsOutput {
+                total_staked: chain.format_stake(self.staking_stats.total_staked),
+                lowest_staked: chain.format_stake(self.staking_stats.lowest_staked),
+                avg_staked: chain.format_stake(self.staking_stats.avg_staked),
+            },
             active_validators: self.active_validators.iter().map(|v| {
                 ValidatorOutput {
                     stash: v.stash.clone(),
