@@ -220,6 +220,7 @@ where
                 let controller = controller.unwrap();
                 let validator_ledger = client.ledger(storage, controller).await
                     .map_err(|e| e.to_string())?;
+                let active_stake = validator_ledger.clone().map_or(0, |l| l.active as u64);
                 let has_sufficient_bond = validator_ledger.clone().map_or(false, |l| l.active >= min_validator_bond);
 
                 // Add it to voters if it has sufficient bond
@@ -230,7 +231,7 @@ where
                     None
                 };
 
-                Ok::<(Option<AccountId>, Option<VoterData<MC>>), String>((has_sufficient_bond.then_some(validator), voter_data))
+                Ok::<(Option<(AccountId, u64)>, Option<VoterData<MC>>), String>((has_sufficient_bond.then_some((validator, active_stake)), voter_data))
             }
         }).collect();
         let results = join_all(validators_futures)
@@ -239,19 +240,21 @@ where
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
         
-        let mut targets: Vec<AccountId> = Vec::new();
+        let mut targets_with_stake: Vec<(AccountId, u64)> = Vec::new();
         for (validator, voter_data) in results {
-            if let Some(validator) = validator {
-                targets.push(validator);
+            if let Some((validator, stake)) = validator {
+                targets_with_stake.push((validator, stake));
             }
             if let Some(voter_data) = voter_data {
                 voters.push(voter_data);
             }
         }
-        // }
 
-        // Sort voters by AccountId (first element of tuple)
-        voters.sort_by_key(|v| v.0.clone());
+        // Sort voters by stake (second element of tuple)
+        voters.sort_by(|a, b| a.1.cmp(&b.1));
+
+        // Sotr targets by stake
+        targets_with_stake.sort_by(|a, b| a.1.cmp(&b.1));
 
         // Prepare data for ElectionSnapshotPage
         // divide in pages
@@ -261,7 +264,7 @@ where
             .collect::<Result<Vec<_>, _>>()?;
 
         let targets = TargetSnapshotPage::<MC>::try_from(
-            targets.into_iter().map(|v| v.into()).collect::<Vec<AccountId>>()
+            targets_with_stake.into_iter().map(|(v, _)| v.into()).collect::<Vec<AccountId>>()
         ).map_err(|_| "Too many targets")?;
 
         let election_snapshot_page = ElectionSnapshotPage::<MC> {
@@ -495,7 +498,7 @@ mod tests {
             100,
             validator_voter_targets
         );
-        let voter_page: VoterSnapshotPage<PolkadotMinerConfig> = BoundedVec::try_from(vec![validator_voter, voter]).map_err(|_| "Too many voters in chunk").unwrap();
+        let voter_page: VoterSnapshotPage<PolkadotMinerConfig> = BoundedVec::try_from(vec![voter, validator_voter]).map_err(|_| "Too many voters in chunk").unwrap();
         let voters = vec![voter_page];
 
         let targets: TargetSnapshotPage<PolkadotMinerConfig> = BoundedVec::try_from(vec![AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap()]).map_err(|_| "Too many targets in voter").unwrap();
