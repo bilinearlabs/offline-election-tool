@@ -71,6 +71,7 @@ pub trait RawClientTrait<C: RpcClient + Send + Sync + 'static> {
     async fn enumerate_accounts(&self, module: &[u8], storage: &[u8], at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_validators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_all_list_bags(&self, at: Option<H256>) -> Result<Vec<u64>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[derive(Clone, Copy)]
@@ -190,6 +191,18 @@ impl<C: RpcClient + Send + Sync + 'static> RawClientTrait<C> for RawClient<C> {
     // Get all nominator stash accounts by enumerating Staking.Nominators
     async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>> {
         self.enumerate_accounts(b"Staking", b"Nominators", at).await
+    }
+
+    async fn get_all_list_bags(&self, at: Option<H256>) -> Result<Vec<u64>, Box<dyn std::error::Error + Send + Sync>> {
+        let prefix_key = self.value_key(b"VoterList", b"ListBags");
+        let keys = self.get_all_keys(prefix_key.clone(), at).await?;
+        let mut list_bags = Vec::new();
+        for key in keys {
+            if let Some(list_bag) = self.extract_key::<u64>(&key, prefix_key.0.len()) {
+                list_bags.push(list_bag);
+            }
+        }
+        Ok(list_bags)
     }
 }
 
@@ -341,6 +354,43 @@ mod tests {
         let accounts = client.enumerate_accounts(b"Staking", b"Nominators", None).await;
         assert!(accounts.is_ok());
         assert_eq!(accounts.unwrap(), vec![AccountId::from([0u8; 32])]);
+    }
+
+    #[tokio::test]
+    async fn test_get_all_list_bags() {
+        let mock_client = MockRpcClient::new();
+        let mut client = RawClient { client: mock_client };
+        
+        let prefix_key = client.value_key(b"VoterList", b"ListBags");
+        
+        let bag_threshold_1: u64 = 1000;
+        let bag_threshold_2: u64 = 5000;
+        
+        let mut key1 = prefix_key.0.clone();
+        key1.extend_from_slice(&[0u8; 8]); // twox64 hash placeholder
+        key1.extend_from_slice(&bag_threshold_1.encode());
+        
+        let mut key2 = prefix_key.0.clone();
+        key2.extend_from_slice(&[0u8; 8]); // twox64 hash placeholder
+        key2.extend_from_slice(&bag_threshold_2.encode());
+        
+        let keys = vec![StorageKey(key1), StorageKey(key2)];
+        
+        let serialized_prefix = to_value(prefix_key).unwrap();
+        let at = to_value(None::<H256>).unwrap();
+        let params: (Value, u32, Option<Value>, Value) = (serialized_prefix.clone(), 1000, None, at);
+        
+        client.client
+            .expect_rpc_request::<Vec<StorageKey>, (Value, u32, Option<Value>, Value)>()
+            .with(eq("state_getKeysPaged"), eq(params))
+            .returning(move |_, _| Ok(keys.clone()));
+        
+        let result = client.get_all_list_bags(None).await;
+        assert!(result.is_ok());
+        let list_bags = result.unwrap();
+        assert_eq!(list_bags.len(), 2);
+        assert_eq!(list_bags[0], bag_threshold_1);
+        assert_eq!(list_bags[1], bag_threshold_2);
     }
 }
 

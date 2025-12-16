@@ -158,6 +158,20 @@ pub struct ElectionSnapshotPage<MC: MinerConfig> {
 	pub targets: TargetSnapshotPage<MC>,
 }
 
+#[derive(Debug, Clone, Decode, Encode)]
+pub struct ListBag {
+    pub head: Option<AccountId>,
+    pub tail: Option<AccountId>,
+    // Note: bag_upper is the storage key, not stored in the value
+    // _phantom is zero-sized and skipped by codec
+}
+
+#[derive(Debug, Clone, Decode, Encode)]
+pub struct ListNode {
+    pub id: AccountId,
+    pub prev: Option<AccountId>,
+    pub next: Option<AccountId>,
+}
 #[automock]
 #[async_trait::async_trait]
 pub trait MultiBlockClientTrait<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static, S: StorageTrait + From<Storage> + 'static> {
@@ -175,6 +189,8 @@ pub trait MultiBlockClientTrait<C: ChainClientTrait + Send + Sync + 'static, MC:
     async fn get_nominator(&self, storage: &S, nominator: AccountId) -> Result<Option<NominationsLight<AccountId>>, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_controller_from_stash(&self, storage: &S, stash: AccountId) -> Result<Option<AccountId>, Box<dyn std::error::Error + Send + Sync>>;
     async fn ledger(&self, storage: &S, account: AccountId) -> Result<Option<StakingLedger>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_bags(&self, storage: &S, index: u64) -> Result<Option<ListBag>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_nodes(&self, storage: &S, account: AccountId) -> Result<Option<ListNode>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 pub struct MultiBlockClient<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static, S: StorageTrait + From<Storage> + 'static> {
@@ -340,6 +356,30 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
             Some(entry) => {
                 let ledger: StakingLedger = codec::Decode::decode(&mut entry.encoded())?;
                 Ok(Some(ledger))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn list_bags(&self, storage: &S, index: u64) -> Result<Option<ListBag>, Box<dyn std::error::Error + Send + Sync>> {
+        let storage_key = subxt::dynamic::storage("VoterList", "ListBags", vec![Value::from(index)]);
+        let bags_entry = storage.fetch(&storage_key).await?;
+        match bags_entry {
+            Some(entry) => {
+                let bags: ListBag = codec::Decode::decode(&mut entry.encoded())?;
+                Ok(Some(bags))
+            }
+            None => Ok(None),
+        }
+    }
+    async fn list_nodes(&self, storage: &S, account: AccountId) -> Result<Option<ListNode>, Box<dyn std::error::Error + Send + Sync>> {
+        let encoded_account = account.encode();
+        let storage_key = subxt::dynamic::storage("VoterList", "ListNodes", vec![Value::from(encoded_account)]);
+        let nodes_entry = storage.fetch(&storage_key).await?;
+        match nodes_entry {
+            Some(entry) => {
+                let nodes: ListNode = codec::Decode::decode(&mut entry.encoded())?;
+                Ok(Some(nodes))
             }
             None => Ok(None),
         }
@@ -669,4 +709,55 @@ mod tests {
         assert_eq!(ledger.unlocking, unlocking);
     }
 
+    #[tokio::test]
+    async fn test_list_bags() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let index: u64 = 1000;
+        let address = subxt::dynamic::storage("VoterList", "ListBags", vec![Value::from(index)]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let head = AccountId::new([1; 32]);
+                let tail = AccountId::new([2; 32]);
+                let bag = ListBag {
+                    head: Some(head),
+                    tail: Some(tail),
+                };
+                let value = fake_value_thunk_from(bag);
+                Ok(Some(value))
+            });
+        let chain_client = MockChainClientTrait::new();
+        let client = MultiBlockClient::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage> {client:chain_client, _phantom: PhantomData };
+        let bag = client.list_bags(&dummy_storage, index).await;
+        let bag = bag.unwrap().unwrap();
+        assert_eq!(bag.head, Some(AccountId::new([1; 32])));
+        assert_eq!(bag.tail, Some(AccountId::new([2; 32])));
+    }
+
+    #[tokio::test]
+    async fn test_list_nodes() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let account = AccountId::new([0; 32]);
+        let address = subxt::dynamic::storage("VoterList", "ListNodes", vec![Value::from(account.encode())]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let node = ListNode {
+                    id: AccountId::new([0; 32]),
+                    prev: Some(AccountId::new([1; 32])),
+                    next: Some(AccountId::new([2; 32])),
+                };
+                let value = fake_value_thunk_from(node);
+                Ok(Some(value))
+            });
+        let chain_client = MockChainClientTrait::new();
+        let client = MultiBlockClient::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage> {client:chain_client, _phantom: PhantomData };
+        let node = client.list_nodes(&dummy_storage, account).await;
+        let node = node.unwrap().unwrap();
+        assert_eq!(node.id, AccountId::new([0; 32]));
+        assert_eq!(node.prev, Some(AccountId::new([1; 32])));
+        assert_eq!(node.next, Some(AccountId::new([2; 32])));
+    }
 }

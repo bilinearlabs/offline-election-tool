@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use mockall::automock;
@@ -158,56 +159,112 @@ where
         info!("No snapshot found, getting validators and nominators from staking storage");
 
         let raw_client = self.raw_state_client.as_ref();
-        let nominators = raw_client.get_nominators(block_details.block_hash).await?;
         let validators = raw_client.get_validators(block_details.block_hash).await?;
+        let validator_set: HashSet<AccountId> = validators.iter().cloned().collect();
 
         // Prepare data for ElectionSnapshotPage
         let min_nominator_bond = staking_config.min_nominator_bond;
 
-        let nominator_futures: Vec<_> = nominators.into_iter().map(|nominator| {
+        let mut list_bags = raw_client.get_all_list_bags(block_details.block_hash).await?;
+        list_bags.sort();
+
+        // Traverse bags       
+        let bag_futures: Vec<_> = list_bags.iter().map(|&bag_threshold| {
             let storage = &block_details.storage;
             async move {
-                let nominations = client.get_nominator(storage, nominator.clone()).await
-                    .map_err(|e| e.to_string())?
-                    .filter(|n| !n.suppressed);
-                let nominations = match nominations {
-                    Some(n) => n,
-                    None => return Ok::<Option<VoterData<MC>>, String>(None),
+                let mut bag_accounts: Vec<AccountId> = Vec::new();
+                
+                let list_bag = match client.list_bags(storage, bag_threshold).await {
+                    Ok(Some(bag)) => bag,
+                    _ => return Ok::<Vec<AccountId>, String>(bag_accounts),
                 };
-                let controller = client.get_controller_from_stash(storage, nominator.clone()).await
-                    .map_err(|e| e.to_string())?;
-                if controller.is_none() {
-                    return Ok(None);
+                
+                let mut current_node = list_bag.head;
+                while let Some(voter) = current_node {
+                    bag_accounts.push(voter.clone());
+                    
+                    let current_list_node = client.list_nodes(storage, voter).await
+                        .map_err(|e| e.to_string())?;
+                    current_node = current_list_node.and_then(|n| n.next);
                 }
-                let controller = controller.unwrap();
-                let stake = client.ledger(storage, controller).await
-                    .map_err(|e| e.to_string())?
-                    .filter(|s| s.active >= min_nominator_bond);
-                let stake = match stake {
-                    Some(s) => s,
-                    None => return Ok(None),
-                };
-                // Trim targets to max nominations per voter
-                let max_nominations = MC::MaxVotesPerVoter::get();
-                let mut targets = nominations.targets.clone();
-                targets.truncate(max_nominations as usize);
-                let targets_mc = BoundedVec::try_from(
-                    targets.into_iter().map(|t| t.into()).collect::<Vec<AccountId>>()
-                ).map_err(|_| "Too many targets in voter".to_string())?;
-                Ok(Some((nominator, stake.active as u64, targets_mc)))
+                
+                Ok(bag_accounts)
             }
         }).collect();
         
-        let mut voters: Vec<VoterData<MC>> = join_all(nominator_futures)
-            .await
-            .into_iter()
-            .filter_map(|result| result.ok().flatten())
-            .collect();
+        let bag_results = join_all(bag_futures).await;
+        
+        let mut ordered_accounts: Vec<AccountId> = Vec::new();
+        for result in bag_results {
+            match result {
+                Ok(accounts) => ordered_accounts.extend(accounts),
+                Err(e) => return Err(format!("Error traversing bag: {}", e).into()),
+            }
+        }
+        
+        let mut voters: Vec<VoterData<MC>> = Vec::new();
+        
+        let voter_futures: Vec<_> = ordered_accounts.iter().map(|voter| {
+            let voter = voter.clone();
+            let storage = &block_details.storage;
+            let validator_set = &validator_set;
+            
+            async move {
+                let controller = match client.get_controller_from_stash(storage, voter.clone()).await {
+                    Ok(Some(c)) => c,
+                    Ok(None) => return Ok::<Option<VoterData<MC>>, String>(None),
+                    Err(e) => return Err(e.to_string()),
+                };
+                
+                let stake = match client.ledger(storage, controller).await {
+                    Ok(Some(l)) if l.active > 0 => l,
+                    Ok(_) => return Ok(None),
+                    Err(e) => return Err(e.to_string()),
+                };
+                
+                if stake.active < min_nominator_bond {
+                    return Ok(None);
+                }
+                
+                let nominations = client.get_nominator(storage, voter.clone()).await
+                    .map_err(|e| e.to_string())?;
+                
+                if let Some(nominations) = nominations {
+                    if !nominations.suppressed && !nominations.targets.is_empty() {
+                        let max_nominations = MC::MaxVotesPerVoter::get();
+                        let mut targets = nominations.targets.clone();
+                        targets.truncate(max_nominations as usize);
+                        let targets_mc = BoundedVec::try_from(
+                            targets.into_iter().map(|t| t.into()).collect::<Vec<AccountId>>()
+                        ).map_err(|_| "Too many targets in voter".to_string())?;
+                        return Ok(Some((voter, stake.active as u64, targets_mc)));
+                    }
+                } else if validator_set.contains(&voter) {
+                    return Ok(Some((
+                        voter.clone(),
+                        stake.active as u64,
+                        BoundedVec::try_from(vec![voter]).map_err(|_| "Too many targets")?
+                    )));
+                }
+                
+                Ok(None)
+            }
+        }).collect();
+
+        let results = join_all(voter_futures).await;
+        for result in results {
+            match result {
+                Ok(Some(voter_data)) => voters.push(voter_data),
+                Ok(None) => {},
+                Err(e) => return Err(format!("Error processing voter: {}", e).into()),
+            }
+        }
+
+        info!("Completed voter data fetching. Total voters: {}", voters.len());
 
         // Filter validators by min validator bond if > 0 requesting for ledger
         let min_validator_bond = staking_config.min_validator_bond;
         
-        // if min_validator_bond > 0 {
         let storage = &block_details.storage;
         let validators_futures: Vec<_> = validators.into_iter().map(|validator| {
             let client = client;
@@ -215,7 +272,7 @@ where
                 let controller = client.get_controller_from_stash(storage, validator.clone()).await
                     .map_err(|e| e.to_string())?;
                 if controller.is_none() {
-                    return Ok((None, None));
+                    return Ok(None);
                 }
                 let controller = controller.unwrap();
                 let validator_ledger = client.ledger(storage, controller).await
@@ -223,15 +280,7 @@ where
                 let active_stake = validator_ledger.clone().map_or(0, |l| l.active as u64);
                 let has_sufficient_bond = validator_ledger.clone().map_or(false, |l| l.active >= min_validator_bond);
 
-                // Add it to voters if it has sufficient bond
-                let has_sufficient_nominator_bond = validator_ledger.clone().map_or(false, |l| l.active >= min_nominator_bond);
-                let voter_data = if has_sufficient_nominator_bond {
-                    Some((validator.clone(), validator_ledger.unwrap().active as u64, BoundedVec::try_from(vec![validator.clone()]).map_err(|_| "Too many targets in voter")?))
-                } else {
-                    None
-                };
-
-                Ok::<(Option<(AccountId, u64)>, Option<VoterData<MC>>), String>((has_sufficient_bond.then_some((validator, active_stake)), voter_data))
+                Ok::<Option<(AccountId, u64)>, String>(has_sufficient_bond.then_some((validator, active_stake)))
             }
         }).collect();
         let results = join_all(validators_futures)
@@ -241,19 +290,13 @@ where
             .map_err(|e| e.to_string())?;
         
         let mut targets_with_stake: Vec<(AccountId, u64)> = Vec::new();
-        for (validator, voter_data) in results {
+        for validator in results {
             if let Some((validator, stake)) = validator {
                 targets_with_stake.push((validator, stake));
             }
-            if let Some(voter_data) = voter_data {
-                voters.push(voter_data);
-            }
         }
 
-        // Sort voters by stake (second element of tuple)
-        voters.sort_by(|a, b| a.1.cmp(&b.1));
-
-        // Sotr targets by stake
+        // Sort targets by stake
         targets_with_stake.sort_by(|a, b| a.1.cmp(&b.1));
 
         // Prepare data for ElectionSnapshotPage
@@ -299,7 +342,7 @@ mod tests {
     use mockall::{mock};
     use mockall::predicate::eq;
     use crate::miner_config::polkadot::MinerConfig as PolkadotMinerConfig;
-    use crate::multi_block_state_client::{MockMultiBlockClientTrait, MockChainClientTrait, StorageTrait, Phase};
+    use crate::multi_block_state_client::{ListBag, ListNode, MockChainClientTrait, MockMultiBlockClientTrait, Phase, StorageTrait};
     use crate::primitives::{AccountId, Hash};
     use crate::raw_state_client::{MockRawClientTrait, MockRpcClient, NominationsLight, StakingLedger};
     use crate::miner_config::initialize_runtime_constants;
@@ -434,21 +477,38 @@ mod tests {
         let mut raw_client = MockRawClientTrait::<MockRpcClient>::new();
 
         raw_client
-            .expect_get_nominators()
-            .returning(|_at: Option<H256>| Ok(vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()]));
-
-        raw_client
             .expect_get_validators()
             .returning(|_at: Option<H256>| Ok(vec![AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap()]));
 
+        raw_client
+            .expect_get_all_list_bags()
+            .returning(|_at: Option<H256>| Ok(vec![100]));
+
         mock_client
-            .expect_get_nominator()
-            .returning(|_storage: &MockDummyStorage, _nominator: AccountId| Ok(Some(NominationsLight {
-                targets: vec![AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap()],
-                _submitted_in: 10,
-                suppressed: false,
+            .expect_list_bags()
+            .returning(|_storage: &MockDummyStorage, _index: u64| Ok(Some(ListBag {
+                head: Some(AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()),
+                tail: None,
             })));
-        
+
+        mock_client
+            .expect_list_nodes()
+            .times(1)
+            .return_once(|_storage: &MockDummyStorage, _account: AccountId| Ok(Some(ListNode {
+                id: AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+                prev: None,
+                next: Some(AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap()),
+            })));
+
+        mock_client
+            .expect_list_nodes()
+            .times(1)
+            .return_once(|_storage: &MockDummyStorage, _account: AccountId| Ok(Some(ListNode {
+                id: AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap(),
+                prev: None,
+                next: None,
+            })));
+              
         mock_client
             .expect_get_controller_from_stash()
             .returning(|_storage: &MockDummyStorage, _stash: AccountId| Ok(Some(AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap())));
@@ -463,8 +523,33 @@ mod tests {
             })));
         
         mock_client
-        .expect_get_controller_from_stash()
-        .returning(|_storage: &MockDummyStorage, _stash: AccountId| Ok(Some(AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap())));
+            .expect_get_nominator()
+            .returning(|_storage: &MockDummyStorage, _nominator: AccountId| Ok(Some(NominationsLight {
+                targets: vec![AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap()],
+                _submitted_in: 10,
+                suppressed: false,
+            })));
+        
+        mock_client
+            .expect_get_controller_from_stash()
+            .returning(|_storage: &MockDummyStorage, _stash: AccountId| Ok(Some(AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap())));
+
+        mock_client
+            .expect_ledger()
+            .returning(|_storage: &MockDummyStorage, _account: AccountId| Ok(Some(StakingLedger {
+                stash: AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap(),
+                total: 100,
+                active: 100,
+                unlocking: vec![],
+            })));
+        
+        mock_client
+            .expect_get_nominator()
+            .returning(|_storage: &MockDummyStorage, _nominator: AccountId| Ok(None));
+
+        mock_client
+            .expect_get_controller_from_stash()
+            .returning(|_storage: &MockDummyStorage, _stash: AccountId| Ok(Some(AccountId::from_ss58check("5CSbZ7wG456oty4WoiX6a1J88VUbrCXLhrKVJ9q95BsYH4TZ").unwrap())));
 
         mock_client
             .expect_ledger()
@@ -528,22 +613,29 @@ mod tests {
         let mut raw_client = MockRawClientTrait::<MockRpcClient>::new();
 
         raw_client
-            .expect_get_nominators()
-            .returning(|_at: Option<H256>| Ok(vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()]));
-
-        raw_client
             .expect_get_validators()
             .returning(|_at: Option<H256>| Ok(vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()]));
 
-        // Get nominator
+        raw_client
+            .expect_get_all_list_bags()
+            .returning(|_at: Option<H256>| Ok(vec![100]));
+
         mock_client
-            .expect_get_nominator()
-            .returning(|_storage: &MockDummyStorage, _nominator: AccountId| Ok(Some(NominationsLight {
-                targets: vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()],
-                _submitted_in: 10,
-                suppressed: false,
+            .expect_list_bags()
+            .return_once(|_storage: &MockDummyStorage, _index: u64| Ok(Some(ListBag {
+                head: Some(AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()),
+                tail: None,
             })));
-        
+
+        mock_client
+            .expect_list_nodes()
+            .return_once(|_storage: &MockDummyStorage, _account: AccountId| Ok(Some(ListNode {
+                id: AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+                prev: None,
+                next: None,
+            })));
+
+        // Get nominator        
         mock_client
             .expect_get_controller_from_stash()
             .returning(|_storage: &MockDummyStorage, _stash: AccountId| Ok(Some(AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap())));
