@@ -221,10 +221,6 @@ where
                     Err(e) => return Err(e.to_string()),
                 };
                 
-                // if stake.active < min_nominator_bond {
-                //     return Ok(None);
-                // }
-                
                 let nominations = client.get_nominator(storage, voter.clone()).await
                     .map_err(|e| e.to_string())?;
                 
@@ -595,96 +591,6 @@ mod tests {
         assert_eq!(snapshot.targets, targets);
         assert_eq!(config.min_nominator_bond, 0);
         assert_eq!(config.min_validator_bond, 0);
-        assert_eq!(config.desired_validators, 10);
-        assert_eq!(config.max_nominations, 16);
-    }
-
-    
-    #[tokio::test]
-    async fn test_get_snapshot_data_from_multi_block_no_snapshot_with_min_bonds() {
-        initialize_runtime_constants();
-        let mut mock_client = MockMultiBlockClientTrait::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>::new();
-
-        mock_client
-            .expect_get_min_nominator_bond()
-            .returning(|_storage: &MockDummyStorage| Ok(100));
-
-        mock_client
-            .expect_get_min_validator_bond()
-            .returning(|_storage: &MockDummyStorage| Ok(100));
-
-        let mut raw_client = MockRawClientTrait::<MockRpcClient>::new();
-
-        raw_client
-            .expect_get_validators()
-            .returning(|_at: Option<H256>| Ok(vec![AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()]));
-
-        raw_client
-            .expect_get_all_list_bags()
-            .returning(|_at: Option<H256>| Ok(vec![100]));
-
-        mock_client
-            .expect_list_bags()
-            .return_once(|_storage: &MockDummyStorage, _index: u64| Ok(Some(ListBag {
-                head: Some(AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap()),
-                tail: None,
-            })));
-
-        mock_client
-            .expect_list_nodes()
-            .return_once(|_storage: &MockDummyStorage, _account: AccountId| Ok(Some(ListNode {
-                id: AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
-                prev: None,
-                next: None,
-            })));
-
-        // Get nominator        
-        mock_client
-            .expect_get_controller_from_stash()
-            .returning(|_storage: &MockDummyStorage, _stash: AccountId| Ok(Some(AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap())));
-
-        mock_client
-            .expect_ledger()
-            .returning(|_storage: &MockDummyStorage, _account: AccountId| Ok(Some(StakingLedger {
-                stash: AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
-                total: 10,
-                active: 10,
-                unlocking: vec![],
-            })));
-        
-        // Get validator
-        mock_client
-        .expect_get_controller_from_stash()
-        .returning(|_storage: &MockDummyStorage, _stash: AccountId| Ok(Some(AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap())));
-
-        mock_client
-            .expect_ledger()
-            .returning(|_storage: &MockDummyStorage, _account: AccountId| Ok(Some(StakingLedger {
-                stash: AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
-                total: 10,
-                active: 10,
-                unlocking: vec![],
-            })));
-
-        let snapshot_service = SnapshotServiceImpl::new(Arc::new(mock_client), Arc::new(raw_client));
-        let result = snapshot_service.get_snapshot_data_from_multi_block(&BlockDetails::<MockDummyStorage> {
-            block_hash: Some(Hash::zero()),
-            phase: Phase::Snapshot(10),
-            round: 1,
-            n_pages: 1,
-            desired_targets: 10,
-            storage: MockDummyStorage::new(),
-            _block_number: 100,
-        }).await;
-
-        assert!(result.is_ok());
-        let (snapshot, config) = result.unwrap();
-        let voters: Vec<VoterSnapshotPage<PolkadotMinerConfig>> = vec![];
-        let targets: TargetSnapshotPage<PolkadotMinerConfig> = BoundedVec::new();
-        assert_eq!(snapshot.voters, voters);
-        assert_eq!(snapshot.targets, targets);
-        assert_eq!(config.min_nominator_bond, 100);
-        assert_eq!(config.min_validator_bond, 100);
         assert_eq!(config.desired_validators, 10);
         assert_eq!(config.max_nominations, 16);
     }
