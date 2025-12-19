@@ -9,6 +9,7 @@ use sp_core::Get;
 use futures::future::join_all;
 use tracing::info;
 
+use crate::miner_config;
 use crate::multi_block_state_client::{BlockDetails, ChainClientTrait, ElectionSnapshotPage, MultiBlockClientTrait, StorageTrait, TargetSnapshotPage, VoterData, VoterSnapshotPage};
 use crate::primitives::{AccountId, Storage};
 use crate::raw_state_client::RawClientTrait;
@@ -142,7 +143,7 @@ where
         let staking_config = get_staking_config_from_multi_block(client, block_details).await?;
         if block_details.phase.has_snapshot() {
             let mut voters = Vec::new();
-            for page in 0..block_details.n_pages {
+            for page in (0..block_details.n_pages).rev() {
                 let voters_page = client.fetch_paged_voter_snapshot(&block_details.storage, block_details.round, page).await?;
                 voters.push(voters_page);
             }
@@ -163,10 +164,8 @@ where
         let validator_set: HashSet<AccountId> = validators.iter().cloned().collect();
 
         // Prepare data for ElectionSnapshotPage
-        let min_nominator_bond = staking_config.min_nominator_bond;
-
         let mut list_bags = raw_client.get_all_list_bags(block_details.block_hash).await?;
-        list_bags.sort();
+        list_bags.sort_by(|a, b| b.cmp(a));
 
         // Traverse bags       
         let bag_futures: Vec<_> = list_bags.iter().map(|&bag_threshold| {
@@ -222,9 +221,9 @@ where
                     Err(e) => return Err(e.to_string()),
                 };
                 
-                if stake.active < min_nominator_bond {
-                    return Ok(None);
-                }
+                // if stake.active < min_nominator_bond {
+                //     return Ok(None);
+                // }
                 
                 let nominations = client.get_nominator(storage, voter.clone()).await
                     .map_err(|e| e.to_string())?;
@@ -253,8 +252,12 @@ where
 
         let results = join_all(voter_futures).await;
         for result in results {
+            // Replicate cut-off logic from MultiBlockElection pallet
+            if voters.len() == miner_config::get_runtime_constants().max_election_voters as usize {
+                break;
+            }
             match result {
-                Ok(Some(voter_data)) => voters.push(voter_data),
+                Ok(Some(voter_data)) => voters.push(voter_data.clone()),
                 Ok(None) => {},
                 Err(e) => return Err(format!("Error processing voter: {}", e).into()),
             }

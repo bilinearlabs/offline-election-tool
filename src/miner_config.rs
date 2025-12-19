@@ -18,6 +18,7 @@ pub struct MinerConstants {
 	pub voter_snapshot_per_block: u32,
 	pub target_snapshot_per_block: u32,
 	pub max_length: u32,
+	pub max_election_voters: usize,
 }
 
 #[derive(Decode, Deserialize, Debug)]
@@ -44,6 +45,7 @@ pub struct PerDispatchClass {
 
 /// Helper function to fetch constants from chain API
 pub async fn fetch_constants<C: ChainClientTrait>(
+	chain: Chain,
 	client: &C,
 ) -> Result<MinerConstants, Box<dyn std::error::Error>> {
 	let pages = client
@@ -73,6 +75,12 @@ pub async fn fetch_constants<C: ChainClientTrait>(
 
 	let max_length = Percent::from_percent(75) * block_length.total();
 
+	let max_election_voters = match chain {
+		Chain::Polkadot => 22500,
+		Chain::Kusama => 12500,
+		Chain::Substrate => 22500,
+	};
+
 	Ok(MinerConstants {
 		pages,
 		max_winners_per_page,
@@ -80,6 +88,7 @@ pub async fn fetch_constants<C: ChainClientTrait>(
 		voter_snapshot_per_block,
 		target_snapshot_per_block,
 		max_length,
+		max_election_voters,
 	})
 }
 
@@ -109,13 +118,8 @@ static ELECTION_CONFIG_FALLBACK: Mutex<ElectionConfig> = Mutex::new(ElectionConf
 });
 
 /// Set the runtime miner constants (should be called once at startup)
-pub fn set_runtime_constants(chain: Chain, constants: MinerConstants) {
+pub fn set_runtime_constants(constants: MinerConstants) {
 	RUNTIME_CONFIG.set(constants).expect("Runtime constants already set");
-	set_max_votes_per_voter(match chain {
-		Chain::Polkadot => 16,
-		Chain::Kusama => 24,
-		Chain::Substrate => 16,
-	});
 }
 
 #[cfg(test)]
@@ -127,13 +131,14 @@ static INIT: Once = Once::new();
 pub fn initialize_runtime_constants() {
 	INIT.call_once(|| {
 		// Ignore error if constants are already set (e.g., by another test)
-		let _ = set_runtime_constants(Chain::Polkadot, MinerConstants {
+		let _ = set_runtime_constants(MinerConstants {
 			pages: 1,
 			max_winners_per_page: 1,
 			max_backers_per_winner: 1,
 			voter_snapshot_per_block: 2,
 			target_snapshot_per_block: 2,
 			max_length: 100000000,
+			max_election_voters: 22500,
 		});
 	});
 }
@@ -156,14 +161,6 @@ pub fn set_election_config(chain: Chain, algorithm: Algorithm, iterations: usize
 	*ELECTION_CONFIG_FALLBACK.lock().unwrap() = ElectionConfig {
 		algorithm,
 		iterations,
-		max_votes_per_voter,
-	};
-}
-
-fn set_max_votes_per_voter(max_votes_per_voter: u32) {
-	*ELECTION_CONFIG_FALLBACK.lock().unwrap() = ElectionConfig {
-		algorithm: Algorithm::SeqPhragmen,
-		iterations: 0,
 		max_votes_per_voter,
 	};
 }
