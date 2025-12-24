@@ -143,7 +143,7 @@ where
         let staking_config = get_staking_config_from_multi_block(client, block_details).await?;
         if block_details.phase.has_snapshot() {
             let mut voters = Vec::new();
-            for page in (0..block_details.n_pages).rev() {
+            for page in 0..block_details.n_pages {
                 let voters_page = client.fetch_paged_voter_snapshot(&block_details.storage, block_details.round, page).await?;
                 voters.push(voters_page);
             }
