@@ -259,6 +259,16 @@ where
             }
         }
 
+        // Reorder voters to match real snapshot pages
+        let pages = block_details.n_pages;
+        let chunk_size = voters.len() / pages as usize;
+        voters = voters
+            .chunks(chunk_size)
+            .rev()
+            .flatten()
+            .cloned()
+            .collect();
+        
         info!("Completed voter data fetching. Total voters: {}", voters.len());
 
         // Filter validators by min validator bond if > 0 requesting for ledger
