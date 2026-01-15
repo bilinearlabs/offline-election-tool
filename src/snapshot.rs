@@ -260,16 +260,14 @@ where
         }
 
         // Reorder voters to match real snapshot pages
-        let pages = block_details.n_pages;
-        let chunk_size = voters.len() / pages as usize;
-        voters = voters
-            .chunks(chunk_size)
+        let total_voters = voters.len();
+        let voters: Vec<Vec<_>> = voters
+            .chunks(MC::VoterSnapshotPerBlock::get() as usize)
+            .map(|chunk| chunk.to_vec())
             .rev()
-            .flatten()
-            .cloned()
             .collect();
         
-        info!("Completed voter data fetching. Total voters: {}", voters.len());
+        info!("Completed voter data fetching. Total voters: {}", total_voters);
 
         // Filter validators by min validator bond if > 0 requesting for ledger
         let min_validator_bond = staking_config.min_validator_bond;
@@ -305,14 +303,11 @@ where
             }
         }
 
-        // Sort targets by stake
-        targets_with_stake.sort_by(|a, b| a.1.cmp(&b.1));
-
         // Prepare data for ElectionSnapshotPage
         // divide in pages
         let voters: Vec<VoterSnapshotPage<MC>> = voters
-            .chunks(MC::VoterSnapshotPerBlock::get() as usize)
-            .map(|chunk| BoundedVec::try_from(chunk.to_vec()).map_err(|_| "Too many voters in chunk"))
+            .into_iter()
+            .map(|page| BoundedVec::try_from(page).map_err(|_| "Too many voters in chunk"))
             .collect::<Result<Vec<_>, _>>()?;
 
         let targets = TargetSnapshotPage::<MC>::try_from(

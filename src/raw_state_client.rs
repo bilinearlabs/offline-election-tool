@@ -70,7 +70,7 @@ pub trait RawClientTrait<C: RpcClient + Send + Sync + 'static> {
     async fn get_all_keys(&self, prefix: StorageKey, at: Option<H256>) -> Result<Vec<StorageKey>, Box<dyn std::error::Error + Send + Sync>>;
     async fn enumerate_accounts(&self, module: &[u8], storage: &[u8], at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_validators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>>;
-    async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>>;
+    //async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_all_list_bags(&self, at: Option<H256>) -> Result<Vec<u64>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
@@ -178,7 +178,6 @@ impl<C: RpcClient + Send + Sync + 'static> RawClientTrait<C> for RawClient<C> {
                 accounts.push(account);
             }
         }
-        accounts.sort();
         accounts.dedup();
         Ok(accounts)
     }
@@ -189,9 +188,9 @@ impl<C: RpcClient + Send + Sync + 'static> RawClientTrait<C> for RawClient<C> {
     }
 
     // Get all nominator stash accounts by enumerating Staking.Nominators
-    async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>> {
-        self.enumerate_accounts(b"Staking", b"Nominators", at).await
-    }
+    // async fn get_nominators(&self, at: Option<H256>) -> Result<Vec<AccountId>, Box<dyn std::error::Error + Send + Sync>> {
+    //     self.enumerate_accounts(b"Staking", b"Nominators", at).await
+    // }
 
     async fn get_all_list_bags(&self, at: Option<H256>) -> Result<Vec<u64>, Box<dyn std::error::Error + Send + Sync>> {
         let prefix_key = self.value_key(b"VoterList", b"ListBags");
