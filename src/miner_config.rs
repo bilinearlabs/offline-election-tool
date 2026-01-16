@@ -76,9 +76,9 @@ pub async fn fetch_constants<C: ChainClientTrait>(
 	let max_length = Percent::from_percent(75) * block_length.total();
 
 	let max_election_voters = match chain {
-		Chain::Polkadot => 22528,
+		Chain::Polkadot => 22500,
 		Chain::Kusama => 12500,
-		Chain::Substrate => 22528,
+		Chain::Substrate => 22500,
 	};
 
 	Ok(MinerConstants {
@@ -138,7 +138,7 @@ pub fn initialize_runtime_constants() {
 			voter_snapshot_per_block: 2,
 			target_snapshot_per_block: 2,
 			max_length: 100000000,
-			max_election_voters: 22528,
+			max_election_voters: 22500,
 		});
 	});
 }
@@ -326,7 +326,7 @@ pub mod polkadot {
 			VoterIndex = u32,
 			TargetIndex = u16,
 			Accuracy = PerU16,
-			MaxVoters = ConstU32::<22528>
+			MaxVoters = ConstU32::<22500>
 		>(16)
 	);
 
@@ -390,7 +390,7 @@ pub mod substrate {
             VoterIndex = u16,
             TargetIndex = u16,
             Accuracy = Percent,
-            MaxVoters = ConstU32::<22528>
+            MaxVoters = ConstU32::<22500>
         >(16)
     );
 

@@ -247,9 +247,11 @@ where
         }).collect();
 
         let results = join_all(voter_futures).await;
+        // limit to snapshot capacity (per-page slots * pages) to match real snapshot size
+        let max_voters = MC::VoterSnapshotPerBlock::get() as usize * block_details.n_pages as usize;
         for result in results {
-            // Replicate cut-off logic from MultiBlockElection pallet
-            if voters.len() == miner_config::get_runtime_constants().max_election_voters as usize {
+            if voters.len() >= max_voters {
+                info!("snapshot: reached max voters limit {} -> breaking", max_voters);
                 break;
             }
             match result {
