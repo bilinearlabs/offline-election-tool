@@ -9,7 +9,6 @@ use sp_core::Get;
 use futures::future::join_all;
 use tracing::info;
 
-use crate::miner_config;
 use crate::multi_block_state_client::{BlockDetails, ChainClientTrait, ElectionSnapshotPage, MultiBlockClientTrait, StorageTrait, TargetSnapshotPage, VoterData, VoterSnapshotPage};
 use crate::primitives::{AccountId, Storage};
 use crate::raw_state_client::RawClientTrait;
