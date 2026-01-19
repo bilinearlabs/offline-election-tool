@@ -251,7 +251,6 @@ where
         let max_voters = MC::VoterSnapshotPerBlock::get() as usize * block_details.n_pages as usize;
         for result in results {
             if voters.len() >= max_voters {
-                info!("snapshot: reached max voters limit {} -> breaking", max_voters);
                 break;
             }
             match result {
