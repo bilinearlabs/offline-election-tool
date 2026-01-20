@@ -216,7 +216,14 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
         let storage: S = self.get_storage(block).await?;
 		let phase = self.get_phase(&storage).await?;
         let round = self.get_round(&storage).await?;
-        let desired_targets = self.get_desired_targets(&storage, round).await.unwrap_or(600);
+        let desired_targets_result = self.get_desired_targets(&storage, round).await;
+        let desired_targets = match desired_targets_result {
+            Ok(desired_targets) => desired_targets,
+            Err(_) => {
+                tracing::warn!("Desired targets not found, using default of 600");
+                600
+            }
+        };
 		let n_pages = MC::Pages::get();
 		let block_number = self.get_block_number(&storage).await?;
 		let block_hash = block;
@@ -504,14 +511,14 @@ mod tests {
             .expect_fetch()
             .with(eq(address.clone()))
             .returning(|_address| {
-                let desired_targets = 10;
+                let desired_targets = Some(10);
                 let value = fake_value_thunk_from(desired_targets);
                 Ok(Some(value))
             });
         let chain_client = MockChainClientTrait::new();
         let client = MultiBlockClient::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage> {client:chain_client, _phantom: PhantomData };
         let desired_targets = client.get_desired_targets(&dummy_storage, round).await;
-        assert_eq!(desired_targets.unwrap(), 10);
+        assert_eq!(desired_targets.unwrap(), Some(10));
     }
 
     #[tokio::test]
