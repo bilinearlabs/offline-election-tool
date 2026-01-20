@@ -511,14 +511,14 @@ mod tests {
             .expect_fetch()
             .with(eq(address.clone()))
             .returning(|_address| {
-                let desired_targets = Some(10);
+                let desired_targets = 10;
                 let value = fake_value_thunk_from(desired_targets);
                 Ok(Some(value))
             });
         let chain_client = MockChainClientTrait::new();
         let client = MultiBlockClient::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage> {client:chain_client, _phantom: PhantomData };
         let desired_targets = client.get_desired_targets(&dummy_storage, round).await;
-        assert_eq!(desired_targets.unwrap(), Some(10));
+        assert_eq!(desired_targets.unwrap(), 10);
     }
 
     #[tokio::test]
