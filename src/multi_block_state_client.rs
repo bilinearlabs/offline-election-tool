@@ -184,6 +184,7 @@ pub trait MultiBlockClientTrait<C: ChainClientTrait + Send + Sync + 'static, MC:
     async fn get_min_nominator_bond(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_min_validator_bond(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_staking_validator_count(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_total_issuance(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error + Send + Sync>>;
     async fn fetch_paged_voter_snapshot(&self, storage: &S, round: u32, page: u32) -> Result<VoterSnapshotPage<MC>, Box<dyn std::error::Error + Send + Sync>>;
     async fn fetch_paged_target_snapshot(&self, storage: &S, round: u32, page: u32) -> Result<TargetSnapshotPage<MC>, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_validator_prefs(&self, storage: &S, validator: AccountId) -> Result<ValidatorPrefs, Box<dyn std::error::Error + Send + Sync>>;
@@ -307,6 +308,15 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
             .ok_or("Staking::ValidatorCount not found")?;
         let validator_count: u32 = codec::Decode::decode(&mut validator_count_entry.encoded())?;
         Ok(validator_count)
+    }
+
+    async fn get_total_issuance(&self, storage: &S) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let storage_key = subxt::dynamic::storage("Balances", "TotalIssuance", vec![]);
+        let total_issuance_entry = storage.fetch(&storage_key)
+            .await?
+            .ok_or("Balances::TotalIssuance not found")?;
+        let total_issuance: u128 = codec::Decode::decode(&mut total_issuance_entry.encoded())?;
+        Ok(total_issuance)
     }
 
     async fn fetch_paged_voter_snapshot(&self, storage: &S, round: u32, page: u32) -> Result<VoterSnapshotPage<MC>, Box<dyn std::error::Error + Send + Sync>> {

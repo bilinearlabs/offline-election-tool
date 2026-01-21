@@ -162,6 +162,10 @@ where
         let validators = raw_client.get_validators(block_details.block_hash).await?;
         let validator_set: HashSet<AccountId> = validators.iter().cloned().collect();
 
+        // Fetch total issuance for CurrencyToVote scaling
+        let total_issuance = client.get_total_issuance(&block_details.storage).await?;
+        let currency_to_vote_factor = (total_issuance / u64::MAX as u128).max(1);
+
         // Prepare data for ElectionSnapshotPage
         let mut list_bags = raw_client.get_all_list_bags(block_details.block_hash).await?;
         list_bags.sort_by(|a, b| b.cmp(a));
@@ -219,7 +223,10 @@ where
                     Ok(_) => return Ok(None),
                     Err(e) => return Err(e.to_string()),
                 };
-                
+
+                // Apply CurrencyToVote scaling
+                let vote_weight = (stake.active / currency_to_vote_factor) as u64;
+
                 let nominations = client.get_nominator(storage, voter.clone()).await
                     .map_err(|e| e.to_string())?;
                 
@@ -231,12 +238,12 @@ where
                         let targets_mc = BoundedVec::try_from(
                             targets.into_iter().map(|t| t.into()).collect::<Vec<AccountId>>()
                         ).map_err(|_| "Too many targets in voter".to_string())?;
-                        return Ok(Some((voter, stake.active as u64, targets_mc)));
+                        return Ok(Some((voter, vote_weight, targets_mc)));
                     }
                 } else if validator_set.contains(&voter) {
                     return Ok(Some((
                         voter.clone(),
-                        stake.active as u64,
+                        vote_weight,
                         BoundedVec::try_from(vec![voter]).map_err(|_| "Too many targets")?
                     )));
                 }
@@ -477,6 +484,10 @@ mod tests {
         mock_client
             .expect_get_min_validator_bond()
             .returning(|_storage: &MockDummyStorage| Ok(0));
+
+        mock_client
+            .expect_get_total_issuance()
+            .returning(|_storage: &MockDummyStorage| Ok(1_000_000_000_000_000_000u128));
 
         let mut raw_client = MockRawClientTrait::<MockRpcClient>::new();
 
