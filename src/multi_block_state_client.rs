@@ -153,6 +153,7 @@ pub type VoterSnapshotPage<MC> =
 pub type TargetSnapshotPage<MC> =
 	BoundedVec<AccountId, <MC as MinerConfig>::TargetSnapshotPerBlock>;
 
+#[derive(Debug)]
 pub struct ElectionSnapshotPage<MC: MinerConfig> {
 	pub voters: Vec<VoterSnapshotPage<MC>>,
 	pub targets: TargetSnapshotPage<MC>,
@@ -176,7 +177,7 @@ pub struct ListNode {
 #[async_trait::async_trait]
 pub trait MultiBlockClientTrait<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static, S: StorageTrait + From<Storage> + 'static> {
     async fn get_storage(&self, block: Option<Hash>) -> Result<S, Box<dyn std::error::Error + Send + Sync>>;
-    async fn get_block_details(&self, block: Option<Hash>) -> Result<BlockDetails<S>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_block_details(&self, storage: &S, block: Option<Hash>) -> Result<BlockDetails, Box<dyn std::error::Error + Send + Sync>> where S: Clone + 'static;
     async fn get_phase(&self, storage: &S) -> Result<Phase, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_round(&self, storage: &S) -> Result<u32, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_desired_targets(&self, storage: &S, round: u32) -> Result<u32, Box<dyn std::error::Error + Send + Sync>>;
@@ -206,16 +207,15 @@ impl<MC: MinerConfig + Send + Sync + 'static> MultiBlockClient<Client, MC, Stora
 }
 
 #[async_trait::async_trait]
-impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static, S: StorageTrait + From<Storage> + Send + Sync + 'static> MultiBlockClientTrait<C, MC, S> for MultiBlockClient<C, MC, S> {
+impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync + 'static, S: StorageTrait + From<Storage> + Send + Sync + Clone + 'static> MultiBlockClientTrait<C, MC, S> for MultiBlockClient<C, MC, S> {
     async fn get_storage(&self, block: Option<Hash>) -> Result<S, Box<dyn std::error::Error + Send + Sync>> {
         let storage = self.client.get_storage(block).await?;
         Ok(S::from(storage))
     }
 
     // Get block-specific details for a given block.
-    async fn get_block_details(&self, block: Option<Hash>) -> Result<BlockDetails<S>, Box<dyn std::error::Error + Send + Sync>> {
-        let storage: S = self.get_storage(block).await?;
-		let phase = self.get_phase(&storage).await?;
+    async fn get_block_details(&self, storage: &S, block: Option<Hash>) -> Result<BlockDetails, Box<dyn std::error::Error + Send + Sync>> {
+		let phase = self.get_phase(storage).await?;
         let round = self.get_round(&storage).await?;
         let desired_targets = match self.get_desired_targets(&storage, round).await {
             Ok(desired_targets) => desired_targets,
@@ -234,8 +234,7 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
 		let n_pages = MC::Pages::get();
 		let block_number = self.get_block_number(&storage).await?;
 		let block_hash = block;
-        Ok(BlockDetails::<S> { 
-			storage: storage.into(), 
+        Ok(BlockDetails { 
 			phase, 
 			n_pages, 
 			round, 
@@ -412,9 +411,8 @@ impl<C: ChainClientTrait + Send + Sync + 'static, MC: MinerConfig + Send + Sync 
 /// Block-specific details for a given block.
 /// Contains the storage snapshot and metadata for that specific block.
 /// Created via `MultiBlockClient::get_block_details()`.
-#[derive(Debug, Clone)]
-pub struct BlockDetails<S: StorageTrait> {
-	pub storage: S,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockDetails {
 	pub phase: Phase,
 	pub n_pages: u32,
 	pub round: u32,
@@ -460,6 +458,12 @@ mod tests {
         }
     }
 
+    impl Clone for MockDummyStorage {
+        fn clone(&self) -> Self {
+            MockDummyStorage::new()
+        }
+    }
+
     pub fn fake_value_thunk_from<T: codec::Encode>(val: T) -> DecodedValueThunk {
         let metadata = dummy_metadata();
         let type_id = 0;
@@ -481,6 +485,42 @@ mod tests {
     use crate::raw_state_client::UnlockChunk;
 
     use crate::miner_config::initialize_runtime_constants;
+
+    #[test]
+    fn test_phase_has_snapshot() {
+        assert!(!Phase::Off.has_snapshot());
+        assert!(Phase::Signed(1).has_snapshot());
+        assert!(Phase::SignedValidation(1).has_snapshot());
+        assert!(Phase::Unsigned(1).has_snapshot());
+        assert!(!Phase::Snapshot(1).has_snapshot());
+        assert!(Phase::Done.has_snapshot());
+        assert!(Phase::Export(1).has_snapshot());
+        assert!(!Phase::Emergency.has_snapshot());
+    }
+
+    #[tokio::test]
+    async fn test_get_block_details() {
+        initialize_runtime_constants();
+        let mut dummy_storage = MockDummyStorage::new();
+        let phase_addr = subxt::dynamic::storage("MultiBlockElection", "CurrentPhase", vec![]);
+        dummy_storage.expect_fetch_or_default().with(eq(phase_addr.clone())).returning(|_| Ok(fake_value_thunk_from(Phase::Signed(1))));
+        let round_addr = subxt::dynamic::storage("MultiBlockElection", "Round", vec![]);
+        dummy_storage.expect_fetch_or_default().with(eq(round_addr.clone())).returning(|_| Ok(fake_value_thunk_from(1u32)));
+        let desired_addr = subxt::dynamic::storage("MultiBlockElection", "DesiredTargets", vec![Value::from(1u32)]);
+        dummy_storage.expect_fetch().with(eq(desired_addr.clone())).returning(|_| Ok(Some(fake_value_thunk_from(10u32))));
+        let number_addr = subxt::dynamic::storage("System", "Number", vec![]);
+        dummy_storage.expect_fetch().with(eq(number_addr.clone())).returning(|_| Ok(Some(fake_value_thunk_from(100u32))));
+        let chain_client = MockChainClientTrait::new();
+        let client = MultiBlockClient::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage> {client:chain_client, _phantom: PhantomData };
+        let block_details = client.get_block_details(&dummy_storage, None).await;
+        assert!(block_details.is_ok());
+        let block_details = block_details.unwrap();
+        assert_eq!(block_details.phase, Phase::Signed(1));
+        assert_eq!(block_details.round, 1);
+        assert_eq!(block_details.desired_targets, 10);
+        assert_eq!(block_details._block_number, 100);
+        assert_eq!(block_details.block_hash, None);
+    }
 
     #[tokio::test]
     async fn test_get_phase() {
@@ -592,6 +632,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_staking_validator_count() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let address = subxt::dynamic::storage("Staking", "ValidatorCount", vec![]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| {
+                let validator_count = 10;
+                let value = fake_value_thunk_from(validator_count);
+                Ok(Some(value))
+            });
+        let chain_client = MockChainClientTrait::new();
+        let client = MultiBlockClient::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage> {client:chain_client, _phantom: PhantomData };
+        let validator_count = client.get_staking_validator_count(&dummy_storage).await;
+        assert_eq!(validator_count.unwrap(), 10);
+    }
+
+    #[tokio::test]
     async fn test_fetch_paged_voter_snapshot() {
         let mut dummy_storage = MockDummyStorage::new();
         let round = 10;
@@ -685,6 +743,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_nominator_none() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let nominator = AccountId::new([0; 32]);
+        let address = subxt::dynamic::storage("Staking", "Nominators", vec![scale_value::Value::from(nominator.encode())]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| Ok(None));
+        let chain_client = MockChainClientTrait::new();
+        let client = MultiBlockClient::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage> {client:chain_client, _phantom: PhantomData };
+        let result = client.get_nominator(&dummy_storage, nominator).await;
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn test_get_controller_from_stash() {
         let mut dummy_storage = MockDummyStorage::new();
         let stash = AccountId::new([0; 32]);
@@ -701,6 +774,21 @@ mod tests {
         let client = MultiBlockClient::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage> {client:chain_client, _phantom: PhantomData };
         let controller = client.get_controller_from_stash(&dummy_storage, stash).await;
         assert_eq!(controller.unwrap().unwrap(), AccountId::new([0; 32]));
+    }
+
+    #[tokio::test]
+    async fn test_get_controller_from_stash_none() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let stash = AccountId::new([0; 32]);
+        let address = subxt::dynamic::storage("Staking", "Bonded", vec![scale_value::Value::from(stash.encode())]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| Ok(None));
+        let chain_client = MockChainClientTrait::new();
+        let client = MultiBlockClient::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage> {client:chain_client, _phantom: PhantomData };
+        let result = client.get_controller_from_stash(&dummy_storage, stash).await;
+        assert!(result.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -733,6 +821,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ledger_none() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let account = AccountId::new([0; 32]);
+        let address = subxt::dynamic::storage("Staking", "Ledger", vec![scale_value::Value::from(account.encode())]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| Ok(None));
+        let chain_client = MockChainClientTrait::new();
+        let client = MultiBlockClient::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage> {client:chain_client, _phantom: PhantomData };
+        let result = client.ledger(&dummy_storage, account).await;
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn test_list_bags() {
         let mut dummy_storage = MockDummyStorage::new();
         let index: u64 = 1000;
@@ -759,6 +862,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_bags_none() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let index: u64 = 1000;
+        let address = subxt::dynamic::storage("VoterList", "ListBags", vec![Value::from(index)]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| Ok(None));
+        let chain_client = MockChainClientTrait::new();
+        let client = MultiBlockClient::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage> {client:chain_client, _phantom: PhantomData };
+        let result = client.list_bags(&dummy_storage, index).await;
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn test_list_nodes() {
         let mut dummy_storage = MockDummyStorage::new();
         let account = AccountId::new([0; 32]);
@@ -782,5 +900,20 @@ mod tests {
         assert_eq!(node.id, AccountId::new([0; 32]));
         assert_eq!(node.prev, Some(AccountId::new([1; 32])));
         assert_eq!(node.next, Some(AccountId::new([2; 32])));
+    }
+
+    #[tokio::test]
+    async fn test_list_nodes_none() {
+        let mut dummy_storage = MockDummyStorage::new();
+        let account = AccountId::new([0; 32]);
+        let address = subxt::dynamic::storage("VoterList", "ListNodes", vec![Value::from(account.encode())]);
+        dummy_storage
+            .expect_fetch()
+            .with(eq(address.clone()))
+            .returning(|_address| Ok(None));
+        let chain_client = MockChainClientTrait::new();
+        let client = MultiBlockClient::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage> {client:chain_client, _phantom: PhantomData };
+        let result = client.list_nodes(&dummy_storage, account).await;
+        assert!(result.unwrap().is_none());
     }
 }

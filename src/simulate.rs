@@ -95,8 +95,9 @@ where
         min_validator_bond: Option<u128>,
     ) -> Result<SimulationResult, Box<dyn std::error::Error + Send + Sync>> {
         let multi_block_state_client = self.multi_block_state_client.as_ref();
-        let block_details = multi_block_state_client.get_block_details(block).await?;
-        let phase = multi_block_state_client.get_phase(&block_details.storage).await?;
+        let storage = multi_block_state_client.get_storage(block).await?;
+        let block_details = multi_block_state_client.get_block_details(&storage, block).await?;
+        let phase = multi_block_state_client.get_phase(&storage).await?;
         info!("Phase: {:?}", phase);
         let balancing_iter = miner_config::BalancingIterations::get();
         let algorithm = miner_config::get_current_algorithm();
@@ -112,7 +113,7 @@ where
         };        
 
         info!("Fetching snapshot data for election...");
-        let (mut snapshot, staking_config) = self.snapshot_service.get_snapshot_data_from_multi_block(&block_details).await?;
+        let (mut snapshot, staking_config) = self.snapshot_service.get_snapshot_data_from_multi_block(&block_details, &storage).await?;
 
         // Apply min_nominator_bond filter if provided > 0
         let effective_min_nominator_bond = min_nominator_bond.unwrap_or(0);
@@ -140,7 +141,7 @@ where
             info!("Filtering validators by min_validator_bond: {}", effective_min_validator_bond);
             let validator_futures: Vec<_> = snapshot.targets.iter().map(|validator| {
                 let validator = validator.clone();
-                let storage = block_details.storage.clone();
+                let storage = storage.clone();
                 async move {
                     let controller = multi_block_state_client.get_controller_from_stash(&storage, validator.clone()).await
                         .map_err(|e| format!("Error getting controller: {}", e))?;
@@ -283,7 +284,7 @@ where
         }
 
         let validator_futures: Vec<_> = total_supports.into_iter().map(|(winner, support)| {
-            let storage = block_details.storage.clone();
+            let storage = storage.clone();
             async move {
                 let validator_prefs = multi_block_state_client.get_validator_prefs(&storage, winner.clone()).await
                     .unwrap_or(ValidatorPrefs {
@@ -398,27 +399,24 @@ mod tests {
     #[tokio::test]
     async fn test_simulate() {
         initialize_runtime_constants();
-        type MockMBC = MockMultiBlockClientTrait<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>;
-        type MockBD = BlockDetails<MockDummyStorage>;
-        
-        let mut mock_client = MockMBC::new();
-        let block_details = MockBD {
+        let mut mock_client = MockMultiBlockClientTrait::<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>::new();
+        let block_details = BlockDetails {
             block_hash: Some(Hash::zero()),
             phase: Phase::Snapshot(0),
             round: 1,
             n_pages: 1,
             desired_targets: 10,
-            storage: MockDummyStorage::new(),
             _block_number: 100,
         };
 
+        mock_client.expect_get_storage().with(eq(None)).returning(|_| Ok(MockDummyStorage::new()));
         mock_client.expect_get_phase()
             .returning(|_storage: &MockDummyStorage| Ok(Phase::Snapshot(0)));
         
         let block_details_clone = block_details.clone();
         mock_client.expect_get_block_details()
-            .with(eq(None))
-            .returning(move |_block: Option<H256>| Ok(block_details_clone.clone()));
+            .with(always(), eq(None))
+            .returning(move |_storage: &MockDummyStorage, _block: Option<H256>| Ok(block_details_clone.clone()));
 
         mock_client
             .expect_get_validator_prefs()
@@ -428,7 +426,7 @@ mod tests {
             }));
 
         let mut snapshot_service = MockSnapshotService::new();
-        snapshot_service.expect_get_snapshot_data_from_multi_block().returning(move |_block_details: &BlockDetails<MockDummyStorage>| {
+        snapshot_service.expect_get_snapshot_data_from_multi_block().returning(move |_block_details: &BlockDetails, _storage: &MockDummyStorage| {
             Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
                 voters: vec![BoundedVec::try_from(vec![(
                     AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
@@ -465,26 +463,25 @@ mod tests {
     async fn test_simulate_with_min_bonds() {
         initialize_runtime_constants();
         type MockMBC = MockMultiBlockClientTrait<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>;
-        type MockBD = BlockDetails<MockDummyStorage>;
         
         let mut mock_client = MockMBC::new();
-        let block_details = MockBD {
+        let block_details = BlockDetails {
             block_hash: Some(Hash::zero()),
             phase: Phase::Snapshot(0),
             round: 1,
             n_pages: 1,
             desired_targets: 10,
-            storage: MockDummyStorage::new(),
             _block_number: 100,
         };
 
+        mock_client.expect_get_storage().with(eq(None)).returning(|_| Ok(MockDummyStorage::new()));
         mock_client.expect_get_phase()
             .returning(|_storage: &MockDummyStorage| Ok(Phase::Snapshot(0)));
         
         let block_details_clone = block_details.clone();
         mock_client.expect_get_block_details()
-            .with(eq(None))
-            .returning(move |_block: Option<H256>| Ok(block_details_clone.clone()));
+            .with(always(), eq(None))
+            .returning(move |_storage: &MockDummyStorage, _block: Option<H256>| Ok(block_details_clone.clone()));
 
         // Validator 1
         mock_client.expect_get_controller_from_stash()
@@ -518,7 +515,7 @@ mod tests {
             }));
        
         let mut snapshot_service = MockSnapshotService::new();
-        snapshot_service.expect_get_snapshot_data_from_multi_block().returning(move |_block_details: &BlockDetails<MockDummyStorage>| {
+            snapshot_service.expect_get_snapshot_data_from_multi_block().returning(move |_block_details: &BlockDetails, _storage: &MockDummyStorage| {
             Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
                 voters: vec![BoundedVec::try_from(vec![(
                     AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
@@ -555,26 +552,25 @@ mod tests {
     async fn test_simulate_with_manual_override() {
         initialize_runtime_constants();
         type MockMBC = MockMultiBlockClientTrait<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>;
-        type MockBD = BlockDetails<MockDummyStorage>;
         
         let mut mock_client = MockMBC::new();
-        let block_details = MockBD {
+        let block_details = BlockDetails {
             block_hash: Some(Hash::zero()),
             phase: Phase::Snapshot(0),
             round: 1,
             n_pages: 1,
             desired_targets: 10,
-            storage: MockDummyStorage::new(),
             _block_number: 100,
         };
 
+        mock_client.expect_get_storage().with(eq(None)).returning(|_| Ok(MockDummyStorage::new()));
         mock_client.expect_get_phase()
             .returning(|_storage: &MockDummyStorage| Ok(Phase::Snapshot(0)));
         
         let block_details_clone = block_details.clone();
         mock_client.expect_get_block_details()
-            .with(eq(None))
-            .returning(move |_block: Option<H256>| Ok(block_details_clone.clone()));
+            .with(always(), eq(None))
+            .returning(move |_storage: &MockDummyStorage, _block: Option<H256>| Ok(block_details_clone.clone()));
 
         mock_client
             .expect_get_validator_prefs()
@@ -595,7 +591,7 @@ mod tests {
         };
 
         let mut snapshot_service = MockSnapshotService::new();
-        snapshot_service.expect_get_snapshot_data_from_multi_block().returning(move |_block_details: &BlockDetails<MockDummyStorage>| {
+        snapshot_service.expect_get_snapshot_data_from_multi_block().returning(move |_block_details: &BlockDetails, _storage: &MockDummyStorage| {
             Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
                 voters: vec![BoundedVec::try_from(vec![(
                     AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
@@ -626,5 +622,140 @@ mod tests {
                 stake: 100,
             }],
         }]);
+    }
+
+    #[tokio::test]
+    async fn test_simulate_manual_override_already_candidate() {
+        initialize_runtime_constants();
+        type MockMBC = MockMultiBlockClientTrait<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>;
+
+        let mut mock_client = MockMBC::new();
+        let block_details = BlockDetails {
+            block_hash: Some(Hash::zero()),
+            phase: Phase::Snapshot(0),
+            round: 1,
+            n_pages: 1,
+            desired_targets: 10,
+            _block_number: 100,
+        };
+
+        mock_client.expect_get_storage().with(eq(None)).returning(|_| Ok(MockDummyStorage::new()));
+        mock_client.expect_get_phase()
+            .returning(|_storage: &MockDummyStorage| Ok(Phase::Snapshot(0)));
+
+        let block_details_clone = block_details.clone();
+        mock_client.expect_get_block_details()
+            .with(always(), eq(None))
+            .returning(move |_storage: &MockDummyStorage, _block: Option<H256>| Ok(block_details_clone.clone()));
+
+        mock_client
+            .expect_get_validator_prefs()
+            .returning(|_storage: &MockDummyStorage, _validator: AccountId| Ok(ValidatorPrefs {
+                commission: Perbill::from_parts(0),
+                blocked: false,
+            }));
+
+        // manual.candidates includes existing target -> hits "already a candidate" branch
+        let manual_override = Override {
+            voters: vec![],
+            voters_remove: vec![],
+            candidates: vec!["5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2".to_string()],
+            candidates_remove: vec![],
+        };
+
+        let mut snapshot_service = MockSnapshotService::new();
+        snapshot_service.expect_get_snapshot_data_from_multi_block().returning(move |_block_details: &BlockDetails, _storage: &MockDummyStorage| {
+            Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
+                voters: vec![BoundedVec::try_from(vec![(
+                    AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+                    100,
+                    BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+                )]).unwrap()],
+                targets: BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+            }, StakingConfig {
+                desired_validators: 10,
+                max_nominations: 16,
+                min_nominator_bond: 0,
+                min_validator_bond: 0,
+            }))
+        });
+        let simulate_service = SimulateServiceImpl::new(Arc::new(mock_client), Arc::new(snapshot_service));
+        let result = simulate_service.simulate(None, None, false, Some(manual_override), None, None).await;
+        assert!(result.is_ok());
+        let simulation_result = result.unwrap();
+        assert_eq!(simulation_result.active_validators.len(), 1);
+        assert_eq!(simulation_result.active_validators[0].stash, "5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2");
+    }
+
+    #[tokio::test]
+    async fn test_simulate_manual_override_already_voter() {
+        initialize_runtime_constants();
+        type MockMBC = MockMultiBlockClientTrait<MockChainClientTrait, PolkadotMinerConfig, MockDummyStorage>;
+
+        let mut mock_client = MockMBC::new();
+        let block_details = BlockDetails {
+            block_hash: Some(Hash::zero()),
+            phase: Phase::Snapshot(0),
+            round: 1,
+            n_pages: 1,
+            desired_targets: 10,
+            _block_number: 100,
+        };
+
+        mock_client.expect_get_storage().with(eq(None)).returning(|_| Ok(MockDummyStorage::new()));
+        mock_client.expect_get_phase()
+            .returning(|_storage: &MockDummyStorage| Ok(Phase::Snapshot(0)));
+
+        let block_details_clone = block_details.clone();
+        mock_client.expect_get_block_details()
+            .with(always(), eq(None))
+            .returning(move |_storage: &MockDummyStorage, _block: Option<H256>| Ok(block_details_clone.clone()));
+
+        mock_client
+            .expect_get_validator_prefs()
+            .returning(|_storage: &MockDummyStorage, _validator: AccountId| Ok(ValidatorPrefs {
+                commission: Perbill::from_parts(0),
+                blocked: false,
+            }));
+
+        // manual.voters includes same stash as snapshot voter but different votes -> hits "already a voter. Overriding votes"
+        let manual_override = Override {
+            voters: vec![(
+                "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".to_string(),
+                200u64,
+                vec!["5E9yWMxT1CoRPo7CxXQ4uLpHBmwzjFfJDV87dDMGxDo6WuMa".to_string()]
+            )],
+            voters_remove: vec![],
+            candidates: vec![],
+            candidates_remove: vec![],
+        };
+
+        let mut snapshot_service = MockSnapshotService::new();
+            snapshot_service.expect_get_snapshot_data_from_multi_block().returning(move |_block_details: &BlockDetails, _storage: &MockDummyStorage| {
+            Ok((ElectionSnapshotPage::<PolkadotMinerConfig> {
+                voters: vec![BoundedVec::try_from(vec![(
+                    AccountId::from_ss58check("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty").unwrap(),
+                    100,
+                    BoundedVec::try_from(vec![AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap()]).unwrap()
+                )]).unwrap()],
+                targets: BoundedVec::try_from(vec![
+                    AccountId::from_ss58check("5DLAjiZbVGBG1w5xNTaPuHXXVpvzEqWFhw4kwWt7YcNQnKQ2").unwrap(),
+                    AccountId::from_ss58check("5E9yWMxT1CoRPo7CxXQ4uLpHBmwzjFfJDV87dDMGxDo6WuMa").unwrap(),
+                ]).unwrap()
+            }, StakingConfig {
+                desired_validators: 10,
+                max_nominations: 16,
+                min_nominator_bond: 0,
+                min_validator_bond: 0,
+            }))
+        });
+        let simulate_service = SimulateServiceImpl::new(Arc::new(mock_client), Arc::new(snapshot_service));
+        let result = simulate_service.simulate(None, None, false, Some(manual_override), None, None).await;
+        assert!(result.is_ok());
+        let simulation_result = result.unwrap();
+        assert!(!simulation_result.active_validators.is_empty());
+        let validator_5e9y = simulation_result.active_validators.iter().find(|v| v.stash == "5E9yWMxT1CoRPo7CxXQ4uLpHBmwzjFfJDV87dDMGxDo6WuMa").expect("overridden vote target should appear");
+        assert_eq!(validator_5e9y.total_stake, 200);
+        assert_eq!(validator_5e9y.nominations_count, 1);
     }
 }

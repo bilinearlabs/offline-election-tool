@@ -208,6 +208,7 @@ impl<C: RpcClient + Send + Sync + 'static> RawClientTrait<C> for RawClient<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jsonrpsee_core::ClientError;
     use mockall::predicate::*;
     use serde_json::Value;
 
@@ -256,6 +257,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_runtime_version_error() {
+        let mut mock_client = MockRpcClient::new();
+        mock_client
+            .expect_rpc_request::<RuntimeVersion, (Option<()>,)>()
+            .with(eq("state_getRuntimeVersion"), mockall::predicate::always())
+            .returning(|_, _| Err(ClientError::ParseError(serde_json::from_str::<i32>("x").unwrap_err())));
+        let client = RawClient { client: mock_client };
+        let result = client.get_runtime_version().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Error getting runtime version"));
+    }
+
+    #[tokio::test]
     async fn test_get_keys_paged() {
         let mut mock_client = MockRpcClient::new();
         let keys = vec![StorageKey(vec![1u8; 32])];
@@ -295,6 +309,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_all_keys_partial_page() {
+        let mut mock_client = MockRpcClient::new();
+        let keys: Vec<StorageKey> = (0..500).map(|i| StorageKey(vec![i as u8; 32])).collect();
+        mock_client
+            .expect_rpc_request::<Vec<StorageKey>, (Value, u32, Option<Value>, Value)>()
+            .with(eq("state_getKeysPaged"), mockall::predicate::always())
+            .returning(move |_, _| Ok(keys.clone()));
+        let client = RawClient { client: mock_client };
+        let result = client.get_all_keys(StorageKey(vec![1u8; 32]), None).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 500);
+    }
+
+    #[tokio::test]
     async fn test_extract_key() {
         let mock_client = MockRpcClient::new();
         let client = RawClient { client: mock_client };
@@ -303,6 +331,16 @@ mod tests {
         let key = StorageKey(key_bytes);
         let result = client.extract_key::<AccountId>(&key, 32);
         assert_eq!(result, Some(AccountId::from([1u8; 32])));
+    }
+
+    #[tokio::test]
+    async fn test_extract_key_short_key_returns_none() {
+        let mock_client = MockRpcClient::new();
+        let client = RawClient { client: mock_client };
+        let key_bytes = vec![0u8; 32 + 8];
+        let key = StorageKey(key_bytes);
+        let result = client.extract_key::<AccountId>(&key, 32);
+        assert_eq!(result, None);
     }
 
     #[tokio::test]
@@ -390,6 +428,19 @@ mod tests {
         assert_eq!(list_bags.len(), 2);
         assert_eq!(list_bags[0], bag_threshold_1);
         assert_eq!(list_bags[1], bag_threshold_2);
+    }
+
+    #[tokio::test]
+    async fn test_get_keys_paged_error() {
+        let mut mock_client = MockRpcClient::new();
+        mock_client
+            .expect_rpc_request::<Vec<StorageKey>, (Value, u32, Option<Value>, Value)>()
+            .with(eq("state_getKeysPaged"), mockall::predicate::always())
+            .returning(|_, _| Err(ClientError::ParseError(serde_json::from_str::<i32>("x").unwrap_err())));
+        let client = RawClient { client: mock_client };
+        let result = client.get_keys_paged(StorageKey(vec![1u8; 32]), 100, None, None).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Error getting keys paged"));
     }
 }
 

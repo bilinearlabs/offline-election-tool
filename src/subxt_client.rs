@@ -10,14 +10,14 @@ pub struct Client {
 }
 
 impl Client {
-	pub async fn new(uri: &str) -> Result<Self, subxt::Error> {
+	pub async fn new(uri: &str, retry_attempts: Option<usize>) -> Result<Self, subxt::Error> {
 		// Create a reconnecting RPC client with exponential backoff
 		let reconnecting_rpc =
 			ReconnectingRpcClient::builder()
 				.retry_policy(
 					ExponentialBackoff::from_millis(500)
 						.max_delay(Duration::from_secs(30))
-						.take(10), // Allow up to 10 retry attempts before giving up
+						.take(retry_attempts.unwrap_or(10)), // Allow up to 10 retry attempts before giving up
 				)
 				.build(uri.to_string())
 				.await
@@ -53,5 +53,67 @@ impl Client {
 		})?;
 		
 		Ok(val)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	const URI: &str = "wss://sys.ibp.network/asset-hub-polkadot";
+
+	#[tokio::test]
+	async fn test_client_new_invalid_uri_fails() {
+		let result = Client::new("ws://127.0.0.1:1", Some(1)).await;
+		assert!(result.is_err());
+		let err = result.unwrap_err();
+		let msg = err.to_string();
+		assert!(msg.contains("Failed to connect") || msg.contains("Connection refused") || !msg.is_empty());
+	}
+
+	#[tokio::test]
+	async fn test_client_new_valid_uri() {
+		let result = Client::new(URI, None).await;
+		assert!(result.is_ok());
+	}
+
+	#[tokio::test]
+	async fn test_get_constants() {
+		let client = Client::new(URI, None).await.unwrap();
+		let constants = client.fetch_constant::<u32>("MultiBlockElection", "Pages").await;
+		assert!(constants.is_ok());
+		let constants = constants.unwrap();
+		assert!(constants > 0);
+	}
+
+	#[tokio::test]
+	async fn test_get_constants_invalid_pallet() {
+		let client = Client::new(URI, None).await.unwrap();
+		let constants = client.fetch_constant::<u32>("InvalidPallet", "MinNominatorBond").await;
+		assert!(constants.is_err());
+		let err = constants.unwrap_err();
+		let msg = err.to_string();
+		assert!(msg.contains("Failed to fetch constant InvalidPallet::MinNominatorBond"));
+	}
+
+	#[tokio::test]
+	async fn test_get_constants_invalid_constant() {
+		let client = Client::new(URI, None).await.unwrap();
+		let constants = client.fetch_constant::<u32>("Staking", "InvalidConstant").await;
+		assert!(constants.is_err());
+		let err = constants.unwrap_err();
+		let msg = err.to_string();
+		assert!(msg.contains("Failed to fetch constant Staking::InvalidConstant"));
+	}
+
+	#[tokio::test]
+	async fn test_get_constants_invalid_constant_type() {
+		let client = Client::new(URI, None).await.unwrap();
+		let constants = client.fetch_constant::<String>("MultiBlockElection", "Pages").await;
+		assert!(constants.is_err());
+		let err = constants.unwrap_err();
+		let msg = err.to_string();
+		println!("{}", msg);
+		assert!(msg.contains("Failed to decode constant MultiBlockElection::Pages as alloc::string::String"));
 	}
 }

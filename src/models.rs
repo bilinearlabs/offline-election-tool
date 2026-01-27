@@ -10,7 +10,7 @@ pub enum Chain {
     Substrate, // SS58 version 42
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum, Deserialize, Serialize)]
 pub enum Algorithm {
     SeqPhragmen,
     Phragmms,
@@ -208,4 +208,86 @@ impl SimulationResult {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chain_ss58_address_format() {
+        assert_eq!(Chain::Polkadot.ss58_address_format(), Ss58AddressFormat::custom(0));
+        assert_eq!(Chain::Kusama.ss58_address_format(), Ss58AddressFormat::custom(2));
+        assert_eq!(Chain::Substrate.ss58_address_format(), Ss58AddressFormat::custom(42));
+    }
+
+    #[test]
+    fn test_chain_format_stake() {
+        assert!(Chain::Polkadot.format_stake(10_000_000_000).starts_with("1 DOT"));
+        assert!(Chain::Kusama.format_stake(1_000_000_000_000).starts_with("1 KSM"));
+        assert_eq!(Chain::Substrate.format_stake(123), "123 Planck");
+    }
+
+    #[test]
+    fn test_snapshot_to_output_polkadot() {
+        let snapshot = Snapshot {
+            validators: vec![],
+            nominators: vec![SnapshotNominator {stash: "x".to_string(), stake: 10_000_000_000, nominations: vec![]}],
+            config: StakingConfig {desired_validators: 1, max_nominations: 16, min_nominator_bond: 0, min_validator_bond: 0},
+        };
+        let out = snapshot.to_output(Chain::Polkadot);
+        assert_eq!(out.nominators[0].stake, "1 DOT");
+    }
+
+    #[test]
+    fn test_snapshot_to_output_kusama() {
+        let s = Snapshot {
+            validators: vec![],
+            nominators: vec![SnapshotNominator { stash: "x".to_string(), stake: 1_000_000_000_000, nominations: vec![] }],
+            config: StakingConfig { desired_validators: 1, max_nominations: 24, min_nominator_bond: 0, min_validator_bond: 0 },
+        };
+        let out = s.to_output(Chain::Kusama);
+        assert!(out.nominators[0].stake.starts_with("1 KSM"));
+    }
+
+    #[test]
+    fn test_snapshot_to_output_substrate() {
+        let snapshot = Snapshot {
+            validators: vec![],
+            nominators: vec![SnapshotNominator { stash: "x".to_string(), stake: 999, nominations: vec![] }],
+            config: StakingConfig { desired_validators: 1, max_nominations: 16, min_nominator_bond: 0, min_validator_bond: 0 },
+        };
+        let out = snapshot.to_output(Chain::Substrate);
+        assert_eq!(out.nominators[0].stake, "999 Planck");
+    }
+
+    #[test]
+    fn test_simulation_result_to_output_all_chains() {
+        let result = SimulationResult {
+            run_parameters: RunParameters {
+                algorithm: Algorithm::SeqPhragmen,
+                iterations: 0,
+                reduce: false,
+                max_nominations: 16,
+                min_nominator_bond: 0,
+                min_validator_bond: 0,
+                desired_validators: 1,
+            },
+            staking_stats: StakingStats { total_staked: 1_000_000_000_000, lowest_staked: 100, avg_staked: 500 },
+            active_validators: vec![Validator {
+                stash: "x".to_string(),
+                self_stake: 100,
+                total_stake: 1000,
+                commission: 0.0,
+                blocked: false,
+                nominations_count: 0,
+                nominations: vec![],
+            }],
+        };
+        let out_dot = result.to_output(Chain::Polkadot);
+        assert!(out_dot.staking_stats.total_staked.starts_with("100 DOT"));
+        let out_ksm = result.to_output(Chain::Kusama);
+        assert!(out_ksm.staking_stats.total_staked.starts_with("1 KSM"));
+        let out_sub = result.to_output(Chain::Substrate);
+        assert_eq!(out_sub.staking_stats.total_staked, "1000000000000 Planck");
+    }
+}
 

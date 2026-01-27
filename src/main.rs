@@ -1,6 +1,6 @@
 use tracing::info;
 use sp_core::{H256};
-use clap::{arg, command, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use sp_core::crypto::set_default_ss58_version;
 use std::fs::File;
 use std::io::Write;
@@ -134,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let raw_client = raw_state_client::RawClient::new(&args.rpc_endpoint).await?;
-    let subxt_client = subxt_client::Client::new(&args.rpc_endpoint).await?;
+    let subxt_client = subxt_client::Client::new(&args.rpc_endpoint, None).await?;
     
     let runtime_version = raw_client.get_runtime_version().await?;
     let chain = match runtime_version.spec_name.to_string().as_str() {

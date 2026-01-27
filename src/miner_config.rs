@@ -405,6 +405,74 @@ pub mod substrate {
     }
 }
 
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use sp_core::Get;
+	use serial_test::serial;
+	use frame_election_provider_support::NposSolver;
+
+	#[test]
+	fn test_block_length_total() {
+		let bl = BlockLength {
+			max: PerDispatchClass { normal: 10, operational: 20, mandatory: 30 },
+		};
+		assert_eq!(bl.total(), 60);
+	}
+
+	#[serial]
+	 fn test_set_election_config_and_get_current_algorithm() {
+		initialize_runtime_constants();
+		set_election_config(Algorithm::SeqPhragmen, 0, None);
+		assert_eq!(get_current_algorithm(), Algorithm::SeqPhragmen);
+		set_election_config(Algorithm::Phragmms, 5, Some(24));
+		assert_eq!(get_current_algorithm(), Algorithm::Phragmms);
+		assert_eq!(MaxVotesPerVoter::get(), 24);
+
+		// Restore default so other tests
+		set_election_config(Algorithm::SeqPhragmen, 0, Some(16));
+	}
+
+	#[tokio::test]
+	#[serial]
+	async fn test_with_election_config() {
+		initialize_runtime_constants();
+		let alg = with_election_config(Algorithm::Phragmms, 3, Some(20), async {
+			(get_current_algorithm(), MaxVotesPerVoter::get())
+		}).await;
+		assert_eq!(alg.0, Algorithm::Phragmms);
+		assert_eq!(alg.1, 20);
+	}
+
+	#[test]
+	fn test_dynamic_solver_seq_phragmen() {
+		initialize_runtime_constants();
+		set_election_config(Algorithm::SeqPhragmen, 0, None);
+		let targets = vec![AccountId::from([1u8; 32])];
+		let voters = vec![
+			(AccountId::from([2u8; 32]), 100u64, vec![AccountId::from([1u8; 32])]),
+		];
+		let result = DynamicSolver::solve(1, targets, voters);
+		assert!(result.is_ok());
+	}
+
+	#[test]
+	#[serial]
+	fn test_dynamic_solver_phragmms() {
+		initialize_runtime_constants();
+		set_election_config(Algorithm::Phragmms, 0, None);
+		let targets = vec![AccountId::from([1u8; 32])];
+		let voters = vec![
+			(AccountId::from([2u8; 32]), 100u64, vec![AccountId::from([1u8; 32])]),
+		];
+		let result = DynamicSolver::solve(1, targets, voters);
+		assert!(result.is_ok());	
+
+		// Restore default so other tests
+		set_election_config(Algorithm::SeqPhragmen, 0, Some(16));
+	}
+}
+
 /// Simple macro to select the appropriate MinerConfig based on chain
 /// Usage: with_miner_config!(chain, { code that uses MinerConfig })
 #[macro_export]

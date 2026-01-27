@@ -33,6 +33,7 @@ subxt = { version = "0.44.0", features = ["reconnecting-rpc-client"] }
 pallet-election-provider-multi-block = "0.4.0"
 frame-election-provider-support = "43.0.0"
 axum-test = "18.2.1"
+serial_test = "3.3.1"
 
 [profile.dev]
 incremental = true
