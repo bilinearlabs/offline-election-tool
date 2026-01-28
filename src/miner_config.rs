@@ -412,6 +412,41 @@ mod tests {
 	use serial_test::serial;
 	use frame_election_provider_support::NposSolver;
 
+	use crate::multi_block_state_client::{MockChainClientTrait};
+	use mockall::predicate::{eq};
+
+	#[tokio::test]
+	async fn fetch_constants_test() {
+		let mut client = MockChainClientTrait::new();
+		client.expect_fetch_constant::<u32>()
+			.with(eq("MultiBlockElection"), eq("Pages"))
+			.returning(|_, _| Ok(1u32));
+		client.expect_fetch_constant::<u32>()
+			.with(eq("MultiBlockElectionVerifier"), eq("MaxWinnersPerPage"))
+			.returning(|_, _| Ok(1u32));
+		client.expect_fetch_constant::<u32>()
+			.with(eq("MultiBlockElectionVerifier"), eq("MaxBackersPerWinner"))
+			.returning(|_, _| Ok(1u32));
+		client.expect_fetch_constant::<u32>()
+			.with(eq("MultiBlockElection"), eq("VoterSnapshotPerBlock"))
+			.returning(|_, _| Ok(1u32));
+		client.expect_fetch_constant::<u32>()
+			.with(eq("MultiBlockElection"), eq("TargetSnapshotPerBlock"))
+			.returning(|_, _| Ok(1u32));
+		client.expect_fetch_constant::<BlockLength>()
+			.with(eq("System"), eq("BlockLength"))
+			.returning(|_, _| Ok(BlockLength { max: PerDispatchClass { normal: 1, operational: 2, mandatory: 3 } }));
+		let constants = fetch_constants(&client).await;
+		assert!(constants.is_ok());
+		let constants = constants.unwrap();
+		assert_eq!(constants.pages, 1);
+		assert_eq!(constants.max_winners_per_page, 1);
+		assert_eq!(constants.max_backers_per_winner, 1);
+		assert_eq!(constants.voter_snapshot_per_block, 1);
+		assert_eq!(constants.target_snapshot_per_block, 1);
+		assert_eq!(constants.max_length, 4);
+	}
+
 	#[test]
 	fn test_block_length_total() {
 		let bl = BlockLength {
