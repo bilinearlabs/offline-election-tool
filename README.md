@@ -1,6 +1,24 @@
 # Offline Election Tool
 
-A Rust tool for simulating Substrate-based blockchain elections offline.
+Networks like Polkadot, Kusama, and their parachains rely on **staking elections** to decide which validators secure the network. Those elections determine who gets to validate blocks and how nominator stake is distributed, but they happen on-chain, in real time, and the results aren’t always easy to predict or analyze in advance.
+
+The **Offline Election Tool** lets you run the same election logic **off-chain**, using real chain data. This means you can test scenarios, experiment with parameters and see potential outcomes without modifying the live network. That makes it easier to understand, plan, and improve participation in proof-of-stake systems.
+
+### Who Is It For?
+
+- **Validators** — See how you might perform in upcoming elections, test different setups, and plan for parameter changes.
+- **Nominators** — Explore how your nominations could translate into elected validators and stake distribution before you commit.
+- **Researchers & analysts** — Study election algorithms (e.g. Phragmén, PhragMMS), compare outcomes across blocks, and analyze fairness and distribution.
+- **Developers & operators** — Integrate election simulation into dashboards, tooling via the REST API, or run one-off experiments from the command line.
+
+### What You Can Do With It
+
+- **Simulate elections** using the same algorithms as the chain (sequential Phragmén or PhragMMS), including optional balancing and reduce steps.
+- **Snapshot staking state** at any block (latest or historical) to see candidates and nominators exactly as the chain sees them.
+- **Experiment safely** with manual overrides: add or remove candidates and voters, adjust stake amounts, and see how results change without affecting the live network.
+- **Run it as a service** via the REST API for integration with other tools, UIs, or automation.
+
+Whether you’re checking your validator strategy, exploring nomination strategies, or just curious how an election would look under different conditions, this tool lets you simulate scenarios and inspect results without affecting the live network.
 
 ## Usage
 
